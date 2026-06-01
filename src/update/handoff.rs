@@ -22,6 +22,7 @@ use windows::Win32::System::Threading::{
 /// so no zombie wait is required.
 pub fn spawn_detached(exe: &Path, args: &[OsString]) -> io::Result<()> {
     let mut cmdline = build_command_line(exe, args);
+    let exe_w: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
 
     let si = STARTUPINFOW {
         cb: std::mem::size_of::<STARTUPINFOW>() as u32,
@@ -32,7 +33,7 @@ pub fn spawn_detached(exe: &Path, args: &[OsString]) -> io::Result<()> {
     let flags = CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
     let ok = unsafe {
         CreateProcessW(
-            PCWSTR::null(),
+            PCWSTR::from_raw(exe_w.as_ptr()),
             windows::core::PWSTR(cmdline.as_mut_ptr()),
             None,
             None,
