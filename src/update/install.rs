@@ -1,10 +1,9 @@
-// Download a release asset and swap it in via native Win32 calls.
+// Download a release asset and swap it in via a detached helper process.
 //
-// After writing the new .exe to a staging path and verifying its
-// SHA-256, we `MoveFileExW` the running exe sideways (so Windows
-// releases the file lock on our own image), then `MoveFileExW` the
-// staged exe into place, then spawn the new binary detached via
-// `handoff::spawn_detached`. No shell, no console allocation.
+// The running process cannot reliably replace its own mapped image on
+// Windows. Instead, it writes the new .exe to a staging path, starts that
+// staged binary with `--apply-update`, and then exits. The helper waits for
+// the parent process to exit before replacing the install target.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -13,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_COPY_ALLOWED, MOVEFILE_REPLACE_EXISTING, MOVE_FILE_FLAGS,
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVE_FILE_FLAGS,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -36,19 +35,37 @@ pub fn begin(http: &Client, release: &super::Release) -> Result<(), super::Error
         std::fs::create_dir_all(parent)?;
     }
     download(http, &release.asset_url, &staging, release.asset_sha256.as_ref())?;
-    swap_and_spawn(&staging, &current, &release.version)?;
+    spawn_update_helper(&staging, &current, &release.version)?;
     Ok(())
 }
 
-/// CLI entry-point compatibility for `--apply-update <target> <source> <pid>`.
-/// The native handoff already does the swap-and-restart; if this binary
-/// is invoked with the legacy flag (e.g. from an older release's helper)
-/// just exit cleanly so the upgrade still completes.
+/// CLI entry point for `--apply-update <target> <source> <parent-pid> <version>`.
+/// Runs from the staged new binary, waits for the old UI process to exit,
+/// replaces the installed exe, and starts the installed copy.
 pub fn run_cli(args: &[String]) -> Option<i32> {
-    if args.len() >= 2 && args[1] == "--apply-update" {
-        Some(0)
-    } else {
-        None
+    if args.get(1).map(String::as_str) != Some("--apply-update") {
+        return None;
+    }
+    let Some(target) = args.get(2).map(PathBuf::from) else {
+        return Some(2);
+    };
+    let Some(source) = args.get(3).map(PathBuf::from) else {
+        return Some(2);
+    };
+    let Some(parent_pid) = args.get(4).and_then(|s| s.parse::<u32>().ok()) else {
+        return Some(2);
+    };
+    let Some(version) = args.get(5).cloned() else {
+        return Some(2);
+    };
+
+    super::handoff::wait_for_parent_exit(parent_pid, 15_000);
+    match replace_from_helper(&source, &target, &version) {
+        Ok(()) => Some(0),
+        Err(e) => {
+            log::error!("apply-update failed: {e}");
+            Some(1)
+        }
     }
 }
 
@@ -101,25 +118,29 @@ fn reject_unsafe_path(p: &Path) -> Result<(), super::Error> {
     Ok(())
 }
 
-fn swap_and_spawn(
-    source: &Path,
+fn spawn_update_helper(
+    staging: &Path,
     target: &Path,
     version: &super::release::Version,
 ) -> Result<(), super::Error> {
+    let pid = unsafe { GetCurrentProcessId() };
+    let version_str = format!("{}.{}.{}", version.major, version.minor, version.patch);
+    let args = vec![
+        OsString::from("--apply-update"),
+        target.as_os_str().to_os_string(),
+        staging.as_os_str().to_os_string(),
+        OsString::from(pid.to_string()),
+        OsString::from(version_str),
+    ];
+    super::handoff::spawn_detached(staging, &args).map_err(super::Error::Io)
+}
+
+fn replace_from_helper(source: &Path, target: &Path, version: &str) -> Result<(), super::Error> {
     let backup = backup_path(target);
-    // Step 1: rename running exe sideways. Windows allows renaming a
-    // file even while its image is mapped into memory; this releases
-    // the lock on the original `target` path. Same directory by
-    // construction, so plain MoveFileExW with no flags is sufficient.
+    // Parent has exited, so the install target is no longer mapped.
     move_file(target, &backup, MOVE_FILE_FLAGS(0))?;
 
-    // Step 2: move staged exe into place. Staging lives under
-    // %LOCALAPPDATA%, target lives wherever the user installed —
-    // COPY_ALLOWED lets MoveFileExW fall back to copy+delete when
-    // the two paths cross volumes (portable installs on D:/E:/etc.).
-    let step2_flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED;
-    if let Err(swap_err) = move_file(source, target, step2_flags) {
-        // Best-effort revert. Same volume, no COPY_ALLOWED needed.
+    if let Err(copy_err) = std::fs::copy(source, target) {
         if let Err(revert_err) = move_file(&backup, target, MOVEFILE_REPLACE_EXISTING) {
             log::error!("rollback also failed: {revert_err}; surfacing modal");
             let target_name = target
@@ -128,27 +149,19 @@ fn swap_and_spawn(
                 .unwrap_or_else(|| "claude-code-usage-bubble.exe".to_string());
             surface_rollback_failure(&backup, &target_name);
         }
-        return Err(swap_err);
+        return Err(super::Error::Io(copy_err));
     }
 
-    // Step 3: spawn the new exe detached with --wait-pid + --updated-to.
-    let pid = unsafe { GetCurrentProcessId() };
-    let version_str = format!("{}.{}.{}", version.major, version.minor, version.patch);
-    let args = vec![
-        OsString::from("--wait-pid"),
-        OsString::from(pid.to_string()),
-        OsString::from("--updated-to"),
-        OsString::from(version_str),
-    ];
+    let args = vec![OsString::from("--updated-to"), OsString::from(version)];
     if let Err(spawn_err) = super::handoff::spawn_detached(target, &args) {
-        // New binary is on disk but won't auto-launch. Roll back so
-        // the user's next "Restart" stays on the known-good version.
         log::error!("spawn_detached failed after swap: {spawn_err}; attempting revert");
+        let _ = std::fs::remove_file(target);
         if let Err(revert_err) = move_file(&backup, target, MOVEFILE_REPLACE_EXISTING) {
             log::error!("post-spawn revert failed: {revert_err}");
         }
         return Err(super::Error::Io(spawn_err));
     }
+
     Ok(())
 }
 
