@@ -19,6 +19,9 @@ use std::time::{Duration, SystemTime};
 use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::*;
+use windows::Win32::Graphics::Dwm::{
+    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 use windows::Win32::UI::HiDpi::*;
@@ -55,6 +58,7 @@ const TASKBAR_GAP_LOGICAL: i32 = 4;
 const PEER_ALIGN_TOLERANCE_LOGICAL: i32 = 8;
 const CLASS_NAME: &str = "ClaudeCodeUsageBubble";
 const FULLSCREEN_POLL_MS: u32 = 1500;
+const FULLSCREEN_EDGE_TOLERANCE_PX: i32 = 2;
 const FIVE_HOURS_SECS: u64 = 5 * 60 * 60;
 const SEVEN_DAYS_SECS: u64 = 7 * 24 * 60 * 60;
 
@@ -965,30 +969,7 @@ fn align_with_peer(this_hwnd: HWND, ny: &mut i32, tolerance: i32) {
 
 fn check_fullscreen(bubble_hwnd: HWND) {
     let fg = unsafe { GetForegroundWindow() };
-    if fg == HWND::default() || fg == bubble_hwnd {
-        return;
-    }
-    let mut fr = RECT::default();
-    unsafe {
-        if GetWindowRect(fg, &mut fr).is_err() {
-            return;
-        }
-    }
-    let monitor = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) };
-    if monitor.is_invalid() {
-        return;
-    }
-    let mut info = MONITORINFO {
-        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    let ok = unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() };
-    if !ok {
-        return;
-    }
-    let mr = info.rcMonitor;
-    let is_fullscreen =
-        fr.left <= mr.left && fr.top <= mr.top && fr.right >= mr.right && fr.bottom >= mr.bottom;
+    let evaluation = evaluate_foreground_fullscreen(fg, bubble_hwnd);
 
     let (was_hidden_by_fs, user_hidden) = {
         let bubbles = lock_bubbles();
@@ -998,25 +979,264 @@ fn check_fullscreen(bubble_hwnd: HWND) {
         (b.hidden_by_fullscreen, b.user_hidden)
     };
 
-    if is_fullscreen && !was_hidden_by_fs {
+    if evaluation.is_fullscreen && !was_hidden_by_fs {
         unsafe {
             let _ = ShowWindow(bubble_hwnd, SW_HIDE);
         }
         if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
             b.hidden_by_fullscreen = true;
         }
-    } else if !is_fullscreen && was_hidden_by_fs {
-        if !user_hidden {
-            unsafe {
-                let _ = ShowWindow(bubble_hwnd, SW_SHOWNOACTIVATE);
-            }
-            // Re-paint so the layered surface has the cached data again
-            // (see comment in `set_user_visible`).
-            render(bubble_hwnd);
+        log_fullscreen_decision("hide", &evaluation, false);
+    } else if !evaluation.is_fullscreen && was_hidden_by_fs {
+        show_after_fullscreen(bubble_hwnd, user_hidden);
+        log_fullscreen_decision("show", &evaluation, user_hidden);
+    }
+}
+
+struct FullscreenEvaluation {
+    is_fullscreen: bool,
+    hwnd: HWND,
+    class_name: String,
+    bounds: Option<RECT>,
+    bounds_source: &'static str,
+    monitor: Option<RECT>,
+    reason: &'static str,
+}
+
+fn evaluate_foreground_fullscreen(fg: HWND, bubble_hwnd: HWND) -> FullscreenEvaluation {
+    let mut evaluation = FullscreenEvaluation {
+        is_fullscreen: false,
+        hwnd: fg,
+        class_name: String::new(),
+        bounds: None,
+        bounds_source: "none",
+        monitor: None,
+        reason: "not evaluated",
+    };
+
+    if fg == HWND::default() {
+        evaluation.reason = "no foreground window";
+        return evaluation;
+    }
+
+    evaluation.class_name = window_class_name(fg);
+    if fg == bubble_hwnd || is_ignored_fullscreen_class(&evaluation.class_name) {
+        evaluation.reason = "ignored foreground class";
+        return evaluation;
+    }
+    if unsafe { !IsWindowVisible(fg).as_bool() || IsIconic(fg).as_bool() } {
+        evaluation.reason = "foreground invisible or minimized";
+        return evaluation;
+    }
+    if is_dwm_cloaked(fg) {
+        evaluation.reason = "foreground cloaked";
+        return evaluation;
+    }
+
+    let Some((bounds, source)) = visible_window_bounds(fg) else {
+        evaluation.reason = "foreground bounds unavailable";
+        return evaluation;
+    };
+    evaluation.bounds = Some(bounds);
+    evaluation.bounds_source = source;
+
+    let monitor = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST) };
+    if monitor.is_invalid() {
+        evaluation.reason = "foreground monitor unavailable";
+        return evaluation;
+    }
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { !GetMonitorInfoW(monitor, &mut info).as_bool() } {
+        evaluation.reason = "foreground monitor info unavailable";
+        return evaluation;
+    }
+    evaluation.monitor = Some(info.rcMonitor);
+
+    if !rect_covers_monitor(&bounds, &info.rcMonitor) {
+        evaluation.reason = "visible bounds do not cover monitor";
+        return evaluation;
+    }
+
+    if !window_style_allows_fullscreen(fg) {
+        evaluation.reason = "standard framed window";
+        return evaluation;
+    }
+
+    evaluation.is_fullscreen = true;
+    evaluation.reason = "visible bounds cover monitor";
+    evaluation
+}
+
+fn show_after_fullscreen(bubble_hwnd: HWND, user_hidden: bool) {
+    if !user_hidden {
+        unsafe {
+            let _ = ShowWindow(bubble_hwnd, SW_SHOWNOACTIVATE);
         }
-        if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
-            b.hidden_by_fullscreen = false;
+        // Re-paint so the layered surface has the cached data again
+        // (see comment in `set_user_visible`).
+        render(bubble_hwnd);
+    }
+    if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
+        b.hidden_by_fullscreen = false;
+    }
+}
+
+fn visible_window_bounds(hwnd: HWND) -> Option<(RECT, &'static str)> {
+    let mut rect = RECT::default();
+    let dwm_ok = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rect as *mut _ as *mut c_void,
+            std::mem::size_of::<RECT>() as u32,
+        )
+        .is_ok()
+    };
+    if dwm_ok && !rect_is_empty(&rect) {
+        return Some((rect, "dwm-extended-frame"));
+    }
+
+    unsafe {
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
         }
+    }
+    if rect_is_empty(&rect) {
+        None
+    } else {
+        Some((rect, "window-rect"))
+    }
+}
+
+fn is_dwm_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as *mut c_void,
+            std::mem::size_of::<u32>() as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+    }
+}
+
+fn window_class_name(hwnd: HWND) -> String {
+    let mut buf = [0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buf[..len as usize])
+    }
+}
+
+fn is_ignored_fullscreen_class(class_name: &str) -> bool {
+    ["Progman", "WorkerW", "Shell_TrayWnd", CLASS_NAME]
+        .iter()
+        .any(|ignored| class_name.eq_ignore_ascii_case(ignored))
+}
+
+fn window_style_allows_fullscreen(hwnd: HWND) -> bool {
+    unsafe {
+        SetLastError(WIN32_ERROR(0));
+    }
+    let style = unsafe { GetWindowLongPtrW(hwnd, GWL_STYLE) };
+    if style == 0 && unsafe { GetLastError() } != WIN32_ERROR(0) {
+        return false;
+    }
+    window_style_bits_allow_fullscreen(style as u32)
+}
+
+fn window_style_bits_allow_fullscreen(style: u32) -> bool {
+    let has_child = style & WS_CHILD.0 != 0;
+    let has_popup = style & WS_POPUP.0 != 0;
+    let has_caption = style & WS_CAPTION.0 != 0;
+    let has_resize_frame = style & WS_THICKFRAME.0 != 0;
+
+    !has_child && (has_popup || (!has_caption && !has_resize_frame))
+}
+
+fn rect_covers_monitor(rect: &RECT, bounds: &RECT) -> bool {
+    rect.left <= bounds.left + FULLSCREEN_EDGE_TOLERANCE_PX
+        && rect.top <= bounds.top + FULLSCREEN_EDGE_TOLERANCE_PX
+        && rect.right >= bounds.right - FULLSCREEN_EDGE_TOLERANCE_PX
+        && rect.bottom >= bounds.bottom - FULLSCREEN_EDGE_TOLERANCE_PX
+}
+
+fn rect_is_empty(rect: &RECT) -> bool {
+    rect.right <= rect.left || rect.bottom <= rect.top
+}
+
+fn log_fullscreen_decision(action: &str, evaluation: &FullscreenEvaluation, user_hidden: bool) {
+    log::info!(
+        "bubble fullscreen {action} fg=0x{:X} class={} reason={} bounds_source={} bounds={} monitor={} user_hidden={}",
+        evaluation.hwnd.0 as usize,
+        if evaluation.class_name.is_empty() {
+            "<unknown>"
+        } else {
+            evaluation.class_name.as_str()
+        },
+        evaluation.reason,
+        evaluation.bounds_source,
+        format_rect(evaluation.bounds.as_ref()),
+        format_rect(evaluation.monitor.as_ref()),
+        user_hidden
+    );
+}
+
+fn format_rect(rect: Option<&RECT>) -> String {
+    match rect {
+        Some(r) => format!(
+            "({},{} {}x{})",
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top
+        ),
+        None => String::from("<none>"),
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_tests {
+    use super::*;
+
+    #[test]
+    fn style_bits_allow_popup_or_borderless_windows_only() {
+        assert!(window_style_bits_allow_fullscreen(WS_POPUP.0));
+        assert!(window_style_bits_allow_fullscreen(0));
+        assert!(!window_style_bits_allow_fullscreen(WS_CAPTION.0 | WS_THICKFRAME.0));
+        assert!(!window_style_bits_allow_fullscreen(WS_CHILD.0 | WS_POPUP.0));
+    }
+
+    #[test]
+    fn rect_cover_check_allows_small_edge_differences() {
+        let monitor = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let almost_exact = RECT {
+            left: 1,
+            top: 2,
+            right: 1919,
+            bottom: 1078,
+        };
+        let inset = RECT {
+            left: 8,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+
+        assert!(rect_covers_monitor(&almost_exact, &monitor));
+        assert!(!rect_covers_monitor(&inset, &monitor));
     }
 }
 
