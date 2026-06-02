@@ -245,9 +245,9 @@ fn backup_path(target: &Path) -> PathBuf {
 }
 
 fn surface_rollback_failure(backup: &Path, target_name: &str) {
-    // Pull the localized body from i18n; the caller passes the
+    // Pull the UI body text from i18n; the caller passes the
     // user-meaningful filename so we can format it in-place.
-    let strings = crate::i18n::I18n::load(None).strings().clone();
+    let strings = crate::i18n::I18n::load().strings().clone();
     let body = format!(
         "{}{}\n\n{}",
         strings.update_rollback_failed_body,

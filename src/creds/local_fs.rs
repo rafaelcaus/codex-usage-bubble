@@ -51,8 +51,7 @@ impl super::CredentialSource for LocalClaudeCreds {
     }
 }
 
-/// Shared between local-fs and wsl-bridge sources — both parse the same
-/// JSON shape, the only difference is how they get to the file content.
+/// Parse the Claude credential JSON shape written by the official CLI.
 pub(crate) fn parse_claude_json(content: &str) -> Result<super::Token, super::Error> {
     let value: serde_json::Value = serde_json::from_str(content)?;
     let oauth = value

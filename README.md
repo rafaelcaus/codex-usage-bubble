@@ -18,7 +18,7 @@ which solves the same "how close am I to the Claude Code limit?" problem
 with a horizontal taskbar widget. This project takes the UX in a different
 direction — a floating, draggable circular bubble that the user can place
 anywhere on screen — and is a clean-room implementation: the HTTP client,
-provider polling, credential discovery, localisation, tray rendering, and
+provider polling, credential discovery, tray rendering, and
 self-updater are all written from scratch against the same public APIs
 (Anthropic, ChatGPT, GitHub Releases).
 
@@ -33,8 +33,8 @@ self-updater are all written from scratch against the same public APIs
   (140–360 logical pixels)
 - Left-click the bubble for an expanded panel with both **5h** and **7d**
   bars plus reset countdowns
-- Right-click for refresh, displayed providers, update frequency, language,
-  startup, updates, exit
+- Right-click for refresh, displayed providers, update frequency, startup,
+  updates, exit
 - Optional system tray icons (one per enabled provider)
 - Auto-hide when a fullscreen app is in the foreground (games, video,
   presentations) — reappears when you leave fullscreen
@@ -42,12 +42,8 @@ self-updater are all written from scratch against the same public APIs
 ## Who this is for
 
 Windows 10/11 users who already have **Claude Code (CLI or App) installed
-and signed in**. Codex support is optional — install and sign in to the
-Codex CLI, then enable Codex from the right-click **Providers** menu.
-
-If you use Claude Code through WSL, that is supported too. The monitor
-can read your Claude Code credentials from Windows or from your WSL
-environment.
+and signed in on Windows**. Codex support is optional — install and sign in
+to the Codex CLI, then enable Codex from the right-click **Providers** menu.
 
 ## Requirements
 
@@ -85,9 +81,9 @@ corner of your primary monitor on first launch. Drag it where you want it,
 release to snap to the nearest edge if you let go close to one.
 
 - **Left-click** the bubble to open the expanded panel (5h + 7d + countdowns)
-- **Right-click** for refresh, providers, refresh frequency, language, "Start
-  with Windows", controls, auto-update check (Disabled / Hourly / Daily /
-  Weekly), manual "Check for updates", exit
+- **Right-click** for refresh, providers, refresh frequency, "Start with
+  Windows", controls, auto-update check (Disabled / Hourly / Daily / Weekly),
+  manual "Check for updates", exit
 - **Drag** anywhere — it floats on top of all other windows
 - **Ctrl + MouseWheel** on the bubble, or **Controls** in the right-click
   menu, to resize it
@@ -130,7 +126,6 @@ Settings are saved to:
 What the app reads:
 
 - Your local Claude Code OAuth credentials from `~/.claude/.credentials.json`
-- If needed, the same credentials file inside an installed WSL distro
 - If Codex is enabled, your local Codex credentials from `$CODEX_HOME/auth.json`
   or `~/.codex/auth.json`
 
@@ -145,7 +140,6 @@ What the app stores locally:
 - Bubble position(s) per model
 - Bubble size
 - Polling frequency
-- Language preference
 - Last update check time
 - Displayed provider preferences
 

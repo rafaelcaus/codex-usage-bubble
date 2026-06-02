@@ -1246,12 +1246,8 @@ mod fullscreen_tests {
 
 // ---------- Painting ----------
 
-// Sized for the widest countdown across all shipped locales. Korean
-// "999시간" (3 digits + 2 CJK chars for the hour suffix) is the current
-// worst case; ASCII-only "999d" was too narrow and let CJK text spill
-// out of the column. Update this when adding a locale with a longer
-// suffix.
-const COUNTDOWN_TEMPLATE: &str = "999시간";
+// Sized for the widest English countdown text the bubble renders.
+const COUNTDOWN_TEMPLATE: &str = "999d";
 
 /// Geometry for the bubble's "circle head + pill tail" shape, in DPI-scaled pixels.
 ///
@@ -1885,8 +1881,8 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         // Head: 5h countdown text if available, otherwise the static "5h" tag.
         // The ring already signals "this is the 5h window", so the countdown
         // is the more useful glanceable info when we have it. Fall back to
-        // "5h" when the localized countdown would overflow the rect (e.g.,
-        // wide CJK strings like "999시간" at the 140-logical minimum width) —
+        // "5h" when the countdown would overflow the rect at the
+        // 140-logical minimum width —
         // DT_NOCLIP would otherwise leak the glyphs onto the ring stroke.
         SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
         let head_label_rect_w = layout.head_label_rect.right - layout.head_label_rect.left;

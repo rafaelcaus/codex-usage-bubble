@@ -1,25 +1,9 @@
-// Embedded TOML-based localisation.
-//
-// Each supported language lives in `locales/<code>.toml`. At startup we
-// `include_str!` every file, parse them with `toml`, and stash them in a
-// HashMap keyed by language code. The active language defaults to whatever
-// Windows reports for the user's preferred UI language; the menu lets the
-// user override that.
-//
-// Adding a translation: copy `en.toml` to `<code>.toml`, translate the
-// strings, then add one `include_str!` entry to `RAW_LOCALES` below.
+// English UI strings and formatting helpers.
 
-use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
-use serde::Deserialize;
-
-pub mod detect;
-
-const FALLBACK_CODE: &str = "en";
-
-/// The strings every UI module needs. Field names map 1:1 to TOML keys.
-#[derive(Clone, Debug, Deserialize)]
+/// The strings every UI module needs.
+#[derive(Clone, Debug)]
 pub struct LocaleStrings {
     pub window_title: String,
     pub refresh: String,
@@ -45,8 +29,6 @@ pub struct LocaleStrings {
     pub control_ctrl_wheel: String,
     pub control_tray_click: String,
     pub tray_left_click: String,
-    pub language: String,
-    pub system_default: String,
     pub check_for_updates: String,
     pub checking_for_updates: String,
     pub up_to_date: String,
@@ -74,147 +56,93 @@ pub struct LocaleStrings {
     pub chatgpt_token_expired_title: String,
     pub chatgpt_token_expired_body: String,
     /// Body text for "your usage just crossed 80% of the 5h limit". The
-    /// title is composed from the provider label + percent so it does not
-    /// need to be translated separately.
+    /// title is composed from the provider label + percent.
     pub threshold_80_body: String,
     /// Body text for the 95% threshold balloon.
     pub threshold_95_body: String,
     /// Title for the tray balloon shown on first launch after an auto-update.
     pub update_applied_title: String,
-    /// Prefix for the tray balloon body. Call site appends the version (e.g. "0.1.10").
+    /// Prefix for the tray balloon body. Call site appends the version.
     pub update_applied_body: String,
     /// Prefix for the rollback-failed MessageBox body. Call site appends
     /// the backup path and a separator with the expected target filename.
     pub update_rollback_failed_body: String,
 }
 
-#[derive(Deserialize)]
-struct LocaleFile {
-    code: String,
-    native_name: String,
-    #[serde(flatten)]
+pub struct I18n {
     strings: LocaleStrings,
 }
 
-const RAW_LOCALES: &[(&str, &str)] = &[
-    ("en", include_str!("locales/en.toml")),
-    ("ja", include_str!("locales/ja.toml")),
-    ("ko", include_str!("locales/ko.toml")),
-    ("vi", include_str!("locales/vi.toml")),
-    ("zh-TW", include_str!("locales/zh-TW.toml")),
-];
-
-pub struct I18n {
-    /// Sorted by code so menus list languages deterministically.
-    available: BTreeMap<String, (String, LocaleStrings)>,
-    active: String,
-}
-
 impl I18n {
-    /// Load all embedded TOML files and pick an active language.
-    ///
-    /// `requested` overrides system detection. `None` means "ask Windows".
-    pub fn load(requested: Option<&str>) -> Self {
-        let mut available = BTreeMap::new();
-        for (code, body) in RAW_LOCALES {
-            match toml::from_str::<LocaleFile>(body) {
-                Ok(file) => {
-                    available.insert(file.code.clone(), (file.native_name, file.strings));
-                }
-                Err(e) => {
-                    log::error!("failed to parse locale {code}: {e}");
-                }
-            }
+    pub fn load() -> Self {
+        Self {
+            strings: english_strings(),
         }
-        if !available.contains_key(FALLBACK_CODE) {
-            // Embedded TOMLs are validated by tests; this should never
-            // happen in practice. Fall through with whatever we have.
-            log::error!("fallback locale '{FALLBACK_CODE}' missing");
-        }
-
-        let active = requested
-            .and_then(|c| normalise(c, &available))
-            .or_else(|| detect::detect_system_locale().and_then(|c| normalise(&c, &available)))
-            .unwrap_or_else(|| FALLBACK_CODE.to_string());
-
-        Self { available, active }
     }
 
     pub fn strings(&self) -> &LocaleStrings {
-        self.available
-            .get(&self.active)
-            .map(|(_, s)| s)
-            .unwrap_or_else(|| {
-                // Defensive: if `active` was set to something unavailable
-                // (shouldn't happen given `load` validates) — fall back.
-                &self
-                    .available
-                    .get(FALLBACK_CODE)
-                    .expect("fallback locale must exist")
-                    .1
-            })
-    }
-
-    pub fn active_code(&self) -> &str {
-        &self.active
-    }
-
-    /// Iterate `(code, native_name)` pairs in stable order.
-    pub fn available(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.available
-            .iter()
-            .map(|(code, (name, _))| (code.as_str(), name.as_str()))
-    }
-
-    pub fn set_active(&mut self, requested: Option<&str>) {
-        let new_active = requested
-            .and_then(|c| normalise(c, &self.available))
-            .or_else(|| detect::detect_system_locale().and_then(|c| normalise(&c, &self.available)))
-            .unwrap_or_else(|| FALLBACK_CODE.to_string());
-        self.active = new_active;
+        &self.strings
     }
 }
 
-/// Resolve a user-supplied or system-supplied locale code to one we have.
-///
-/// Handles `en_US`, `en-US`, `EN`, `zh-Hant-TW`, etc. by progressive
-/// fallback: exact → ASCII-lower exact → prefix match.
-fn normalise(input: &str, available: &BTreeMap<String, (String, LocaleStrings)>) -> Option<String> {
-    let cleaned = input.trim().replace('_', "-");
-    if cleaned.is_empty() || cleaned.eq_ignore_ascii_case("system") {
-        return None;
+fn english_strings() -> LocaleStrings {
+    LocaleStrings {
+        window_title: "Claude Code Usage Bubble".into(),
+        refresh: "Refresh".into(),
+        update_frequency: "Update frequency".into(),
+        one_minute: "1 minute".into(),
+        five_minutes: "5 minutes".into(),
+        fifteen_minutes: "15 minutes".into(),
+        one_hour: "1 hour".into(),
+        providers: "Providers".into(),
+        claude_label: "Claude Code".into(),
+        chatgpt_label: "Codex".into(),
+        opencode_go_label: "OpenCode Go".into(),
+        settings: "Settings".into(),
+        start_with_windows: "Start with Windows".into(),
+        reset_position: "Reset position".into(),
+        size_smaller: "Make smaller".into(),
+        size_larger: "Make larger".into(),
+        reset_size: "Reset size".into(),
+        controls: "Controls".into(),
+        control_left_click: "Left-click: details".into(),
+        control_right_click: "Right-click: menu".into(),
+        control_drag: "Drag: move/snap".into(),
+        control_ctrl_wheel: "Ctrl+Wheel: resize".into(),
+        control_tray_click: "Tray click: show/hide".into(),
+        tray_left_click: "Left-click: show/hide".into(),
+        check_for_updates: "Check for updates".into(),
+        checking_for_updates: "Checking for updates...".into(),
+        up_to_date: "Up to date".into(),
+        update_failed: "Update failed".into(),
+        applying_update: "Applying update...".into(),
+        update_available: "Update available".into(),
+        update_via_winget: "via WinGet".into(),
+        auto_update_check: "Auto-update check".into(),
+        auto_check_disabled: "Disabled".into(),
+        auto_check_hourly: "Hourly".into(),
+        auto_check_daily: "Daily".into(),
+        auto_check_weekly: "Weekly".into(),
+        exit: "Exit".into(),
+        restart: "Restart".into(),
+        show_widget: "Show widget".into(),
+        session_window: "5h".into(),
+        weekly_window: "7d".into(),
+        now: "now".into(),
+        day_suffix: "d".into(),
+        hour_suffix: "h".into(),
+        minute_suffix: "m".into(),
+        second_suffix: "s".into(),
+        token_expired_title: "Claude Code session expired".into(),
+        token_expired_body: "Sign in again to keep tracking your usage.".into(),
+        chatgpt_token_expired_title: "Codex session expired".into(),
+        chatgpt_token_expired_body: "Sign in again to keep tracking your usage.".into(),
+        threshold_80_body: "Approaching the 5-hour limit.".into(),
+        threshold_95_body: "Limit is close - consider easing up.".into(),
+        update_applied_title: "Update applied".into(),
+        update_applied_body: "Updated to v".into(),
+        update_rollback_failed_body: "Update failed. Your original binary is saved at: ".into(),
     }
-    // Exact (case-insensitive)
-    for key in available.keys() {
-        if key.eq_ignore_ascii_case(&cleaned) {
-            return Some(key.clone());
-        }
-    }
-    // Special-case: Traditional Chinese variants → zh-TW
-    let lower = cleaned.to_ascii_lowercase();
-    if lower.starts_with("zh")
-        && (lower.contains("tw") || lower.contains("hk") || lower.contains("hant"))
-    {
-        if available.contains_key("zh-TW") {
-            return Some("zh-TW".to_string());
-        }
-    }
-    // Prefix fallback (e.g. "en-US" → "en")
-    let prefix = lower.split('-').next().unwrap_or("");
-    if !prefix.is_empty() {
-        for key in available.keys() {
-            if key
-                .split('-')
-                .next()
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-                == Some(prefix)
-            {
-                return Some(key.clone());
-            }
-        }
-    }
-    None
 }
 
 // ---------- Free-function helpers ----------
@@ -282,79 +210,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_locales_parse_and_include_required_control_strings() {
-        let mut has_fallback = false;
-        for (expected_code, body) in RAW_LOCALES {
-            let file = toml::from_str::<LocaleFile>(body)
-                .unwrap_or_else(|e| panic!("locale {expected_code} failed to parse: {e}"));
-            assert_eq!(file.code, *expected_code);
-            has_fallback |= file.code == FALLBACK_CODE;
-
-            let strings = file.strings;
-            for (name, value) in [
-                ("size_smaller", strings.size_smaller.as_str()),
-                ("providers", strings.providers.as_str()),
-                ("size_larger", strings.size_larger.as_str()),
-                ("opencode_go_label", strings.opencode_go_label.as_str()),
-                ("reset_size", strings.reset_size.as_str()),
-                ("controls", strings.controls.as_str()),
-                ("control_left_click", strings.control_left_click.as_str()),
-                ("control_right_click", strings.control_right_click.as_str()),
-                ("control_drag", strings.control_drag.as_str()),
-                ("control_ctrl_wheel", strings.control_ctrl_wheel.as_str()),
-                ("control_tray_click", strings.control_tray_click.as_str()),
-                ("tray_left_click", strings.tray_left_click.as_str()),
-            ] {
-                assert!(
-                    !value.trim().is_empty(),
-                    "locale {expected_code} has empty {name}"
-                );
-            }
+    fn english_strings_include_required_menu_labels() {
+        let strings = english_strings();
+        for (name, value) in [
+            ("refresh", strings.refresh.as_str()),
+            ("providers", strings.providers.as_str()),
+            ("settings", strings.settings.as_str()),
+            ("size_smaller", strings.size_smaller.as_str()),
+            ("size_larger", strings.size_larger.as_str()),
+            ("reset_size", strings.reset_size.as_str()),
+            ("controls", strings.controls.as_str()),
+            ("control_left_click", strings.control_left_click.as_str()),
+            ("control_right_click", strings.control_right_click.as_str()),
+            ("control_drag", strings.control_drag.as_str()),
+            ("control_ctrl_wheel", strings.control_ctrl_wheel.as_str()),
+            ("control_tray_click", strings.control_tray_click.as_str()),
+            ("tray_left_click", strings.tray_left_click.as_str()),
+        ] {
+            assert!(!value.trim().is_empty(), "empty string: {name}");
         }
-        assert!(has_fallback, "fallback locale {FALLBACK_CODE} missing");
-    }
-
-    #[test]
-    fn locale_schema_rejects_missing_or_malformed_control_strings() {
-        let (_, fallback_body) = RAW_LOCALES
-            .iter()
-            .find(|(code, _)| *code == FALLBACK_CODE)
-            .expect("fallback locale fixture must exist");
-
-        let missing_control =
-            fallback_body.replace("tray_left_click = \"Left-click: show/hide\"\n", "");
-        assert!(
-            toml::from_str::<LocaleFile>(&missing_control).is_err(),
-            "missing tray_left_click should fail locale deserialization"
-        );
-
-        let malformed_control = fallback_body.replace(
-            "control_tray_click = \"Tray click: show/hide\"",
-            "control_tray_click = [\"Tray click: show/hide\"]",
-        );
-        assert!(
-            toml::from_str::<LocaleFile>(&malformed_control).is_err(),
-            "malformed control_tray_click should fail locale deserialization"
-        );
-    }
-
-    #[test]
-    fn locale_schema_rejects_missing_provider_strings() {
-        let (_, fallback_body) = RAW_LOCALES
-            .iter()
-            .find(|(code, _)| *code == FALLBACK_CODE)
-            .expect("fallback locale fixture must exist");
-
-        let missing_providers = fallback_body.replace("providers = \"Providers\"\n", "");
-        assert!(
-            toml::from_str::<LocaleFile>(&missing_providers).is_err(),
-            "missing providers should fail locale deserialization"
-        );
-
-        let missing_opencode = fallback_body.replace("opencode_go_label = \"OpenCode Go\"\n", "");
-        assert!(
-            toml::from_str::<LocaleFile>(&missing_opencode).is_err(),
-            "missing opencode_go_label should fail locale deserialization"
-        );
     }
 }

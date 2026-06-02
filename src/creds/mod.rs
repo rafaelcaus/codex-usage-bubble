@@ -1,13 +1,12 @@
 // Pluggable credential discovery.
 //
 // Each `CredentialSource` knows how to read a single OAuth token from
-// somewhere (a local JSON file, a WSL filesystem, …). The `Locator`
+// somewhere, such as a local JSON file. The `Locator`
 // holds a priority-ordered list and serves the first source that
 // actually has a token. New sources drop in without touching the locator.
 
 pub mod codex_auth;
 pub mod local_fs;
-pub mod wsl_bridge;
 
 #[derive(Clone, Debug)]
 pub struct Token {
@@ -23,8 +22,6 @@ pub struct Token {
 pub enum RefreshHint {
     /// `claude.cmd` / `claude.exe` on PATH.
     LocalClaudeCli,
-    /// Run `claude -p .` inside a specific WSL distro.
-    WslClaudeCli { distro: String },
     /// `codex` / `codex.cmd` / `codex.ps1` on PATH.
     LocalCodexCli,
 }
@@ -37,10 +34,6 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("required field missing from credential JSON: {0}")]
     MissingField(&'static str),
-    #[error("WSL command in {distro:?} failed: {detail}")]
-    WslCommand { distro: String, detail: String },
-    #[error("timeout while talking to WSL")]
-    WslTimeout,
     #[error("credential source unavailable")]
     Unavailable,
 }
@@ -50,7 +43,7 @@ pub trait CredentialSource: Send + Sync {
     /// signatures (e.g. `"local:C:\\Users\\me\\.claude\\.credentials.json"`).
     fn id(&self) -> &str;
 
-    /// Read the current token. May spawn subprocesses (for WSL).
+    /// Read the current token.
     fn read(&self) -> Result<Token, Error>;
 
     /// Cheap change-detection fingerprint. `None` means "source is missing".
@@ -70,15 +63,11 @@ impl Locator {
         Self { sources }
     }
 
-    /// Build a Claude locator with the standard search order: Windows
-    /// home directory first, then every installed WSL distro.
+    /// Build a Claude locator with the standard Windows credential path.
     pub fn for_claude() -> Self {
         let mut sources: Vec<Box<dyn CredentialSource>> = Vec::new();
         if let Some(s) = local_fs::LocalClaudeCreds::detect() {
             sources.push(Box::new(s));
-        }
-        for distro in wsl_bridge::list_distros() {
-            sources.push(Box::new(wsl_bridge::WslClaudeCreds::new(distro)));
         }
         Self { sources }
     }

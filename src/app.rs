@@ -74,17 +74,12 @@ const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
 const IDM_RESET_SIZE: u16 = 36;
-const IDM_LANG_SYSTEM: u16 = 40;
 // 50 is reserved by tray::IDM_TOGGLE_WIDGET — keep the auto-update range
 // clear of it (and any future tray ids in the 5x band).
 const IDM_UPDATE_AUTO_OFF: u16 = 60;
 const IDM_UPDATE_AUTO_HOURLY: u16 = 61;
 const IDM_UPDATE_AUTO_DAILY: u16 = 62;
 const IDM_UPDATE_AUTO_WEEKLY: u16 = 63;
-// IMPORTANT: language ids are dynamic and start at IDM_LANG_BASE.
-// Keep IDM_LANG_BASE the highest static id so the catch-all match arm
-// stays unambiguous.
-const IDM_LANG_BASE: u16 = 100;
 
 // ---------- State ----------
 
@@ -213,7 +208,7 @@ pub fn run(args: crate::AppArgs) {
     };
 
     let settings = settings::load();
-    let i18n = I18n::load(settings.language.as_deref());
+    let i18n = I18n::load();
     let is_dark = os::theme::is_dark();
     let install_channel = update::current_channel();
     let http = match net::Client::new(HTTP_USER_AGENT) {
@@ -436,13 +431,8 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_UPDATE_AUTO_WEEKLY => {
             set_update_check_interval(Some(settings::UPDATE_CHECK_WEEKLY_SECS))
         }
-        IDM_LANG_SYSTEM => set_language(None),
-        // Static ids in the 30-99 band must match BEFORE the dynamic
-        // language guard, otherwise `x >= IDM_LANG_BASE` would swallow any
-        // future id that creeps into the >=100 range.
         tray::IDM_TOGGLE_WIDGET => toggle_widget_visibility(),
         IDM_RESTART => restart_app(),
-        x if x >= IDM_LANG_BASE => set_language_by_index((x - IDM_LANG_BASE) as usize),
         _ => {}
     }
 }
@@ -710,7 +700,7 @@ fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiSta
 }
 
 fn placeholder_panel(model: ProviderId) -> PanelData {
-    let strings = i18n::I18n::load(None).strings().clone();
+    let strings = i18n::I18n::load().strings().clone();
     PanelData {
         model,
         session_pct: 0.0,
@@ -934,8 +924,6 @@ fn announce_update_applied(_msg_hwnd: HWND, version: &str) {
 
 struct ContextMenuSnapshot {
     strings: LocaleStrings,
-    available: Vec<(String, String)>,
-    language_override: Option<String>,
     current_interval: u32,
     update_check_interval_secs: Option<u64>,
     show_claude: bool,
@@ -951,12 +939,6 @@ fn show_context_menu(owner_hwnd: HWND) {
     let snap = match lock_state().as_ref() {
         Some(s) => ContextMenuSnapshot {
             strings: s.i18n.strings().clone(),
-            available: s
-                .i18n
-                .available()
-                .map(|(c, n)| (c.to_string(), n.to_string()))
-                .collect(),
-            language_override: s.settings.language.clone(),
             current_interval: s.settings.poll_interval_ms,
             update_check_interval_secs: s.settings.update_check_interval_secs,
             show_claude: s.settings.show_claude_code,
@@ -1056,39 +1038,6 @@ fn show_context_menu(owner_hwnd: HWND) {
             &snap.strings.reset_position,
             MENU_ITEM_FLAGS(0),
         );
-
-        let Ok(lang) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(lang) failed");
-            let _ = DestroyMenu(settings_menu);
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        append_item(
-            lang,
-            IDM_LANG_SYSTEM,
-            &snap.strings.system_default,
-            if snap.language_override.is_none() {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        for (i, (code, name)) in snap.available.iter().enumerate() {
-            let id = IDM_LANG_BASE + i as u16;
-            let flags = if snap
-                .language_override
-                .as_deref()
-                .map(|c| c == code)
-                .unwrap_or(false)
-            {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            };
-            append_item(lang, id, name, flags);
-        }
-        append_submenu(settings_menu, lang, &snap.strings.language);
-        let _ = AppendMenuW(settings_menu, MF_SEPARATOR, 0, PCWSTR::null());
 
         let version_label = version_action_label(&snap);
         let version_flags = if matches!(
@@ -1370,25 +1319,6 @@ fn set_bubble_size(size_logical: i32) {
     for hwnd in hwnds {
         bubble::set_size_logical(hwnd, snap.bubble_size_logical);
     }
-}
-
-fn set_language(_dummy: Option<()>) {
-    update_settings(|s| {
-        s.i18n.set_active(None);
-        s.settings.language = None;
-    });
-    propagate_to_ui();
-}
-
-fn set_language_by_index(idx: usize) {
-    update_settings(|s| {
-        let code = s.i18n.available().nth(idx).map(|(c, _)| c.to_string());
-        if let Some(c) = code.as_deref() {
-            s.i18n.set_active(Some(c));
-        }
-        s.settings.language = code;
-    });
-    propagate_to_ui();
 }
 
 fn version_action() {

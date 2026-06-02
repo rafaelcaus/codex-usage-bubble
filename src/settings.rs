@@ -139,8 +139,6 @@ pub struct Settings {
     #[serde(default = "default_poll_interval_ms")]
     pub poll_interval_ms: u32,
     #[serde(default)]
-    pub language: Option<String>,
-    #[serde(default)]
     pub last_update_check_unix: Option<u64>,
     #[serde(default = "default_update_check_interval_secs")]
     pub update_check_interval_secs: Option<u64>,
@@ -157,7 +155,6 @@ impl Default for Settings {
             bubble_positions: BubblePositions::default(),
             bubble_size_logical: default_bubble_size(),
             poll_interval_ms: default_poll_interval_ms(),
-            language: None,
             last_update_check_unix: None,
             update_check_interval_secs: default_update_check_interval_secs(),
             widget_visible: default_widget_visible(),

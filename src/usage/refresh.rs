@@ -56,11 +56,13 @@ impl Orchestrator {
 
 fn spawn_cli(hint: &RefreshHint) -> bool {
     match hint {
-        RefreshHint::LocalClaudeCli => spawn_local(&["claude.cmd", "claude.exe", "claude"], &["-p", "."]),
-        RefreshHint::WslClaudeCli { distro } => spawn_wsl(distro),
-        RefreshHint::LocalCodexCli => {
-            spawn_local(&["codex.cmd", "codex.ps1", "codex.exe", "codex"], &["exec", "."])
+        RefreshHint::LocalClaudeCli => {
+            spawn_local(&["claude.cmd", "claude.exe", "claude"], &["-p", "."])
         }
+        RefreshHint::LocalCodexCli => spawn_local(
+            &["codex.cmd", "codex.ps1", "codex.exe", "codex"],
+            &["exec", "."],
+        ),
     }
 }
 
@@ -69,7 +71,11 @@ fn spawn_local(candidates: &[&str], args: &[&str]) -> bool {
         let lower = name.to_ascii_lowercase();
         let mut cmd = if lower.ends_with(".ps1") {
             let mut c = Command::new("powershell.exe");
-            c.arg("-NoProfile").arg("-ExecutionPolicy").arg("Bypass").arg("-File").arg(name);
+            c.arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-File")
+                .arg(name);
             for a in args {
                 c.arg(a);
             }
@@ -99,25 +105,4 @@ fn spawn_local(candidates: &[&str], args: &[&str]) -> bool {
         }
     }
     false
-}
-
-fn spawn_wsl(distro: &str) -> bool {
-    let script = "if command -v claude >/dev/null 2>&1; then claude -p .; \
-                  elif [ -x \"$HOME/.local/bin/claude\" ]; then \"$HOME/.local/bin/claude\" -p .; \
-                  else exit 127; fi";
-    Command::new("wsl.exe")
-        .arg("-d")
-        .arg(distro)
-        .arg("--")
-        .arg("bash")
-        .arg("-lic")
-        .arg(script)
-        .env_remove("CLAUDECODE")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .creation_flags(CREATE_NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .is_ok()
 }
