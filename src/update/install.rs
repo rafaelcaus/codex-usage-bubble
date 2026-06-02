@@ -1,9 +1,10 @@
 // Download a release asset and swap it in via a detached helper process.
 //
 // The running process cannot reliably replace its own mapped image on
-// Windows. Instead, it writes the new .exe to a staging path, starts that
-// staged binary with `--apply-update`, and then exits. The helper waits for
-// the parent process to exit before replacing the install target.
+// Windows. Instead, it writes the new .exe to a staging path, copies the
+// current executable to a helper path, starts that helper with
+// `--apply-update`, and then exits. The helper waits for the parent process
+// to exit before replacing the install target with the staged new binary.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -12,12 +13,10 @@ use sha2::{Digest, Sha256};
 
 use windows::core::PCWSTR;
 use windows::Win32::Storage::FileSystem::{
-    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVE_FILE_FLAGS,
+    MoveFileExW, MOVEFILE_COPY_ALLOWED, MOVEFILE_REPLACE_EXISTING, MOVE_FILE_FLAGS,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
-use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_ICONERROR, MB_OK,
-};
+use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
 
 use crate::net::Client;
 use crate::os::to_utf16_nul;
@@ -34,8 +33,16 @@ pub fn begin(http: &Client, release: &super::Release) -> Result<(), super::Error
     if let Some(parent) = staging.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    download(http, &release.asset_url, &staging, release.asset_sha256.as_ref())?;
-    spawn_update_helper(&staging, &current, &release.version)?;
+    download(
+        http,
+        &release.asset_url,
+        &staging,
+        release.asset_sha256.as_ref(),
+    )?;
+    let helper = helper_path()?;
+    reject_unsafe_path(&helper)?;
+    prepare_update_helper(&current, &helper)?;
+    spawn_update_helper(&helper, &staging, &current, &release.version)?;
     Ok(())
 }
 
@@ -80,7 +87,9 @@ fn download(
         .header("User-Agent", super::release::user_agent())
         .send()?;
     if !(200..300).contains(&resp.status()) {
-        return Err(super::Error::Network(crate::net::Error::Status(resp.status())));
+        return Err(super::Error::Network(crate::net::Error::Status(
+            resp.status(),
+        )));
     }
     let body = resp.body();
     if let Some(expected) = expected_sha256 {
@@ -111,14 +120,13 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn reject_unsafe_path(p: &Path) -> Result<(), super::Error> {
     let s = p.to_string_lossy();
     if s.contains('%') {
-        return Err(super::Error::UnsafePath(format!(
-            "path contains '%': {s}"
-        )));
+        return Err(super::Error::UnsafePath(format!("path contains '%': {s}")));
     }
     Ok(())
 }
 
 fn spawn_update_helper(
+    helper: &Path,
     staging: &Path,
     target: &Path,
     version: &super::release::Version,
@@ -132,7 +140,7 @@ fn spawn_update_helper(
         OsString::from(pid.to_string()),
         OsString::from(version_str),
     ];
-    super::handoff::spawn_detached(staging, &args).map_err(super::Error::Io)
+    super::handoff::spawn_detached(helper, &args).map_err(super::Error::Io)
 }
 
 fn replace_from_helper(source: &Path, target: &Path, version: &str) -> Result<(), super::Error> {
@@ -140,16 +148,26 @@ fn replace_from_helper(source: &Path, target: &Path, version: &str) -> Result<()
     // Parent has exited, so the install target is no longer mapped.
     move_file(target, &backup, MOVE_FILE_FLAGS(0))?;
 
-    if let Err(copy_err) = std::fs::copy(source, target) {
-        if let Err(revert_err) = move_file(&backup, target, MOVEFILE_REPLACE_EXISTING) {
-            log::error!("rollback also failed: {revert_err}; surfacing modal");
-            let target_name = target
-                .file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "claude-code-usage-bubble.exe".to_string());
-            surface_rollback_failure(&backup, &target_name);
+    let swap_flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED;
+    if let Err(swap_err) = move_file(source, target, swap_flags) {
+        // Compatibility for users updating from a release that invoked
+        // the downloaded binary itself as the helper. A mapped source exe
+        // may not be movable, but it can usually still be copied.
+        let copy_result = std::fs::copy(source, target);
+        if copy_result.is_err() {
+            log::error!("source move failed before copy fallback: {swap_err}");
         }
-        return Err(super::Error::Io(copy_err));
+        if let Err(copy_err) = copy_result {
+            if let Err(revert_err) = move_file(&backup, target, MOVEFILE_REPLACE_EXISTING) {
+                log::error!("rollback also failed: {revert_err}; surfacing modal");
+                let target_name = target
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "claude-code-usage-bubble.exe".to_string());
+                surface_rollback_failure(&backup, &target_name);
+            }
+            return Err(super::Error::Io(copy_err));
+        }
     }
 
     let args = vec![OsString::from("--updated-to"), OsString::from(version)];
@@ -161,6 +179,8 @@ fn replace_from_helper(source: &Path, target: &Path, version: &str) -> Result<()
         }
         return Err(super::Error::Io(spawn_err));
     }
+
+    let _ = std::fs::remove_file(source);
 
     Ok(())
 }
@@ -227,6 +247,47 @@ fn stage_path() -> Result<PathBuf, super::Error> {
         .join("update.exe"))
 }
 
+fn helper_path() -> Result<PathBuf, super::Error> {
+    let base = dirs::data_local_dir().ok_or_else(|| {
+        super::Error::NotWritable("no local data directory available".to_string())
+    })?;
+    let pid = unsafe { GetCurrentProcessId() };
+    Ok(base
+        .join("ClaudeCodeUsageBubble")
+        .join("updates")
+        .join(format!("updater-helper-{pid}.exe")))
+}
+
+fn prepare_update_helper(current: &Path, helper: &Path) -> Result<(), super::Error> {
+    if let Some(parent) = helper.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(current, helper)?;
+    Ok(())
+}
+
+pub fn cleanup_staged_update_files() {
+    let Ok(stage) = stage_path() else {
+        return;
+    };
+    let Some(dir) = stage.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name == "update.exe" || (name.starts_with("updater-helper-") && name.ends_with(".exe")) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                log::debug!("cleanup_staged_update_files: remove {:?} failed: {e}", path);
+            }
+        }
+    }
+}
+
 fn ensure_writable(target: &Path) -> Result<(), super::Error> {
     let parent = target.parent().ok_or_else(|| {
         super::Error::NotWritable("could not resolve install directory".to_string())
@@ -235,4 +296,23 @@ fn ensure_writable(target: &Path) -> Result<(), super::Error> {
     std::fs::write(&probe, b"").map_err(|e| super::Error::NotWritable(e.to_string()))?;
     let _ = std::fs::remove_file(&probe);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_and_helper_paths_are_distinct_exes() {
+        let stage = stage_path().expect("stage path");
+        let helper = helper_path().expect("helper path");
+
+        assert_eq!(stage.file_name().unwrap(), "update.exe");
+        assert!(helper
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("updater-helper-"));
+        assert_ne!(stage, helper);
+    }
 }

@@ -267,6 +267,7 @@ pub fn run(args: crate::AppArgs) {
     if let Ok(exe_path) = std::env::current_exe() {
         update::handoff::cleanup_stale_old_exes(&exe_path);
     }
+    update::install::cleanup_staged_update_files();
 
     let poll_interval = lock_state()
         .as_ref()
