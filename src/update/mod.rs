@@ -1,9 +1,9 @@
 // Self-update subsystem.
 //
 // Two stages: `release::fetch_latest` checks GitHub releases for a newer
-// build; `install::begin` downloads the .exe, swaps it in via native
-// `MoveFileExW`, then spawns the new binary detached via
-// `CreateProcessW`. No shell handoff — nothing can flash a console.
+// build; `install::begin` downloads the .exe, swaps it in via `self_replace`,
+// then spawns the new binary detached via `CreateProcessW`. No shell handoff —
+// nothing can flash a console.
 
 pub mod channel;
 pub mod handoff;

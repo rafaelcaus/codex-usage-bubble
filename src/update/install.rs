@@ -1,10 +1,10 @@
-// Download a release asset and swap it in via a detached helper process.
+// Download a release asset and swap it in through the proven `self_replace`
+// handoff path.
 //
 // The running process cannot reliably replace its own mapped image on
-// Windows. Instead, it writes the new .exe to a staging path, copies the
-// current executable to a helper path, starts that helper with
-// `--apply-update`, and then exits. The helper waits for the parent process
-// to exit before replacing the install target with the staged new binary.
+// Windows. `self_replace` handles the platform-specific rename/copy sequence
+// for that case. After the replacement succeeds, we start the installed path
+// with `--wait-pid` and let the current process exit.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,16 @@ use crate::net::Client;
 use crate::os::to_utf16_nul;
 
 pub fn begin(http: &Client, release: &super::Release) -> Result<(), super::Error> {
+    match begin_inner(http, release) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            write_update_error(&e);
+            Err(e)
+        }
+    }
+}
+
+fn begin_inner(http: &Client, release: &super::Release) -> Result<(), super::Error> {
     let current = std::env::current_exe()?;
     ensure_writable(&current)?;
     let staging = stage_path()?;
@@ -39,10 +49,9 @@ pub fn begin(http: &Client, release: &super::Release) -> Result<(), super::Error
         &staging,
         release.asset_sha256.as_ref(),
     )?;
-    let helper = helper_path()?;
-    reject_unsafe_path(&helper)?;
-    prepare_update_helper(&current, &helper)?;
-    spawn_update_helper(&helper, &staging, &current, &release.version)?;
+    replace_current_exe(&staging)?;
+    spawn_replaced_exe(&current, &release.version)?;
+    let _ = std::fs::remove_file(&staging);
     Ok(())
 }
 
@@ -141,6 +150,26 @@ fn spawn_update_helper(
         OsString::from(version_str),
     ];
     super::handoff::spawn_detached(helper, &args).map_err(super::Error::Io)
+}
+
+fn replace_current_exe(staging: &Path) -> Result<(), super::Error> {
+    self_replace::self_replace(staging)
+        .map_err(|e| super::Error::SwapFailed(format!("self_replace({}): {e}", staging.display())))
+}
+
+fn spawn_replaced_exe(
+    target: &Path,
+    version: &super::release::Version,
+) -> Result<(), super::Error> {
+    let pid = unsafe { GetCurrentProcessId() };
+    let version_str = format!("{}.{}.{}", version.major, version.minor, version.patch);
+    let args = vec![
+        OsString::from("--wait-pid"),
+        OsString::from(pid.to_string()),
+        OsString::from("--updated-to"),
+        OsString::from(version_str),
+    ];
+    super::handoff::spawn_detached(target, &args).map_err(super::Error::Io)
 }
 
 fn replace_from_helper(source: &Path, target: &Path, version: &str) -> Result<(), super::Error> {
@@ -245,6 +274,31 @@ fn stage_path() -> Result<PathBuf, super::Error> {
         .join("ClaudeCodeUsageBubble")
         .join("updates")
         .join("update.exe"))
+}
+
+fn update_error_log_path() -> Result<PathBuf, super::Error> {
+    let base = dirs::data_local_dir().ok_or_else(|| {
+        super::Error::NotWritable("no local data directory available".to_string())
+    })?;
+    Ok(base
+        .join("ClaudeCodeUsageBubble")
+        .join("updates")
+        .join("update-error.log"))
+}
+
+fn write_update_error(error: &super::Error) {
+    let Ok(path) = update_error_log_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default();
+    let body = format!("unix_time={ts}\nerror={error}\n");
+    let _ = std::fs::write(path, body);
 }
 
 fn helper_path() -> Result<PathBuf, super::Error> {
