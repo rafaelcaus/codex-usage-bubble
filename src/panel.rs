@@ -317,6 +317,7 @@ fn paint(hwnd: HWND, hdc: HDC) {
         let header = match data.model {
             ProviderId::Claude => data.strings.claude_label.clone(),
             ProviderId::ChatGpt => data.strings.chatgpt_label.clone(),
+            ProviderId::OpenCodeGo => data.strings.opencode_go_label.clone(),
         };
         draw_text(
             hdc,
@@ -331,11 +332,8 @@ fn paint(hwnd: HWND, hdc: HDC) {
         );
 
         let bar_x = scaled(PADDING_LOGICAL) + scaled(LABEL_W_LOGICAL) + scaled(4);
-        let bar_w = rc.right
-            - bar_x
-            - scaled(PADDING_LOGICAL)
-            - scaled(RIGHT_TEXT_W_LOGICAL)
-            - scaled(4);
+        let bar_w =
+            rc.right - bar_x - scaled(PADDING_LOGICAL) - scaled(RIGHT_TEXT_W_LOGICAL) - scaled(4);
         let row1_y = scaled(PADDING_LOGICAL) + scaled(24);
         let row2_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(ROW_GAP_LOGICAL) + scaled(8);
 

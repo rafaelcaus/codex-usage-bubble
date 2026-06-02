@@ -19,6 +19,7 @@ pub fn accent_color_for(model: ProviderId, is_dark: bool) -> Color {
                 Color::from_hex("#1A1A1A")
             }
         }
+        ProviderId::OpenCodeGo => Color::from_hex("#3BAE75"),
     }
 }
 

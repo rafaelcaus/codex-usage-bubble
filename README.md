@@ -33,9 +33,9 @@ self-updater are all written from scratch against the same public APIs
   (140–360 logical pixels)
 - Left-click the bubble for an expanded panel with both **5h** and **7d**
   bars plus reset countdowns
-- Right-click for refresh, displayed models, update frequency, language,
+- Right-click for refresh, displayed providers, update frequency, language,
   startup, updates, exit
-- Optional system tray icons (one per enabled model)
+- Optional system tray icons (one per enabled provider)
 - Auto-hide when a fullscreen app is in the foreground (games, video,
   presentations) — reappears when you leave fullscreen
 
@@ -43,7 +43,7 @@ self-updater are all written from scratch against the same public APIs
 
 Windows 10/11 users who already have **Claude Code (CLI or App) installed
 and signed in**. Codex support is optional — install and sign in to the
-Codex CLI, then enable Codex from the right-click **Models** menu.
+Codex CLI, then enable Codex from the right-click **Providers** menu.
 
 If you use Claude Code through WSL, that is supported too. The monitor
 can read your Claude Code credentials from Windows or from your WSL
@@ -85,7 +85,7 @@ corner of your primary monitor on first launch. Drag it where you want it,
 release to snap to the nearest edge if you let go close to one.
 
 - **Left-click** the bubble to open the expanded panel (5h + 7d + countdowns)
-- **Right-click** for refresh, models, refresh frequency, language, "Start
+- **Right-click** for refresh, providers, refresh frequency, language, "Start
   with Windows", controls, auto-update check (Disabled / Hourly / Daily /
   Weekly), manual "Check for updates", exit
 - **Drag** anywhere — it floats on top of all other windows
@@ -94,14 +94,17 @@ release to snap to the nearest edge if you let go close to one.
 - **Tray icon** (if enabled): left-click toggles the bubble visibility,
   right-click opens the same menu
 
-### Models
+### Providers
 
-Use the right-click **Models** menu to choose what is shown:
+Use the right-click **Providers** menu to choose what is shown:
 
 - **Claude Code** is enabled by default
 - **Codex** can be enabled alongside Claude Code or shown by itself
+- **OpenCode Go** is listed for future support; usage bars remain disabled
+  until OpenCode exposes a stable quota source or console integration is
+  explicitly enabled
 
-When both models are shown, each gets its own bubble that you can position
+When multiple providers are shown, each gets its own bubble that you can position
 independently.
 
 ## Diagnostics
@@ -144,7 +147,7 @@ What the app stores locally:
 - Polling frequency
 - Language preference
 - Last update check time
-- Displayed model preferences
+- Displayed provider preferences
 
 What it does **not** do: send credentials to any third-party server, run a
 backend service, collect analytics, upload your project files, or write to

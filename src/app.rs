@@ -66,6 +66,7 @@ const IDM_FREQ_15MIN: u16 = 12;
 const IDM_FREQ_1HOUR: u16 = 13;
 const IDM_MODEL_CLAUDE: u16 = 20;
 const IDM_MODEL_CHATGPT: u16 = 21;
+const IDM_MODEL_OPENCODE_GO: u16 = 22;
 const IDM_START_WITH_WINDOWS: u16 = 30;
 const IDM_RESET_POSITION: u16 = 31;
 const IDM_VERSION_ACTION: u16 = 32;
@@ -325,11 +326,10 @@ fn create_initial_bubbles() {
         Some(s) => (s.settings.clone(), s.is_dark),
         None => return,
     };
-    if settings.show_claude_code {
-        spawn_bubble(ProviderId::Claude, &settings, is_dark);
-    }
-    if settings.show_codex {
-        spawn_bubble(ProviderId::ChatGpt, &settings, is_dark);
+    for provider in ProviderId::LIVE_USAGE {
+        if settings.is_provider_enabled(provider) {
+            spawn_bubble(provider, &settings, is_dark);
+        }
     }
 }
 
@@ -421,6 +421,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_FREQ_1HOUR => set_poll_interval(POLL_1_HOUR),
         IDM_MODEL_CLAUDE => toggle_model(ProviderId::Claude),
         IDM_MODEL_CHATGPT => toggle_model(ProviderId::ChatGpt),
+        IDM_MODEL_OPENCODE_GO => {}
         IDM_START_WITH_WINDOWS => toggle_startup(),
         IDM_RESET_POSITION => reset_positions(),
         IDM_VERSION_ACTION => version_action(),
@@ -761,28 +762,23 @@ fn refresh_tray_icons() {
 
 fn refresh_tray_icons_with(snap: &UiSnapshot) {
     let mut icons = Vec::new();
-    if snap.settings.show_claude_code {
-        let entry = snap.snapshots.get(&ProviderId::Claude);
+    for provider in ProviderId::LIVE_USAGE {
+        if !snap.settings.is_provider_enabled(provider) {
+            continue;
+        }
+        let entry = snap.snapshots.get(&provider);
         icons.push(TrayIconData {
-            kind: ProviderId::Claude,
+            kind: provider,
             percent: if snap.last_poll_ok {
                 entry.map(|e| e.windows.primary.utilization)
             } else {
                 None
             },
-            tooltip: tray_tooltip(&snap.i18n_strings.claude_label, entry, &snap.i18n_strings),
-        });
-    }
-    if snap.settings.show_codex {
-        let entry = snap.snapshots.get(&ProviderId::ChatGpt);
-        icons.push(TrayIconData {
-            kind: ProviderId::ChatGpt,
-            percent: if snap.last_poll_ok {
-                entry.map(|e| e.windows.primary.utilization)
-            } else {
-                None
-            },
-            tooltip: tray_tooltip(&snap.i18n_strings.chatgpt_label, entry, &snap.i18n_strings),
+            tooltip: tray_tooltip(
+                &provider_label(provider, &snap.i18n_strings),
+                entry,
+                &snap.i18n_strings,
+            ),
         });
     }
     tray::sync(snap.msg_hwnd.to_hwnd(), &icons);
@@ -801,6 +797,14 @@ fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleSt
         "{label}\n{}: {session}\n{}: {weekly}\n{}",
         strings.session_window, strings.weekly_window, strings.tray_left_click
     )
+}
+
+fn provider_label(provider: ProviderId, strings: &LocaleStrings) -> String {
+    match provider {
+        ProviderId::Claude => strings.claude_label.clone(),
+        ProviderId::ChatGpt => strings.chatgpt_label.clone(),
+        ProviderId::OpenCodeGo => strings.opencode_go_label.clone(),
+    }
 }
 
 fn handle_tray_action(action: TrayAction) {
@@ -859,10 +863,7 @@ fn show_threshold_balloon(provider: ProviderId, threshold: u8) {
         }
         s.last_balloon_at = Some(Instant::now());
         let strings = s.i18n.strings();
-        let provider_label = match provider {
-            ProviderId::Claude => strings.claude_label.clone(),
-            ProviderId::ChatGpt => strings.chatgpt_label.clone(),
-        };
+        let provider_label = provider_label(provider, strings);
         let title = format!("{provider_label} · {threshold}%");
         let body = if threshold >= 95 {
             strings.threshold_95_body.clone()
@@ -895,6 +896,10 @@ fn show_token_expired_balloon(failed: ProviderId) {
             ProviderId::ChatGpt => (
                 strings.chatgpt_token_expired_title.clone(),
                 strings.chatgpt_token_expired_body.clone(),
+            ),
+            ProviderId::OpenCodeGo => (
+                strings.opencode_go_label.clone(),
+                strings.update_failed.clone(),
             ),
         };
         (s.msg_hwnd, failed, title, body)
@@ -935,6 +940,7 @@ struct ContextMenuSnapshot {
     update_check_interval_secs: Option<u64>,
     show_claude: bool,
     show_chatgpt: bool,
+    show_opencode_go: bool,
     widget_visible: bool,
     install_channel: InstallChannel,
     update_status: UpdateStatus,
@@ -955,6 +961,7 @@ fn show_context_menu(owner_hwnd: HWND) {
             update_check_interval_secs: s.settings.update_check_interval_secs,
             show_claude: s.settings.show_claude_code,
             show_chatgpt: s.settings.show_codex,
+            show_opencode_go: s.settings.show_opencode_go,
             widget_visible: s.settings.widget_visible,
             install_channel: s.install_channel,
             update_status: s.update_status,
@@ -991,13 +998,13 @@ fn show_context_menu(owner_hwnd: HWND) {
         }
         append_submenu(menu, freq, &snap.strings.update_frequency);
 
-        let Ok(models) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(models) failed");
+        let Ok(providers) = CreatePopupMenu() else {
+            log::error!("CreatePopupMenu(providers) failed");
             let _ = DestroyMenu(menu);
             return;
         };
         append_item(
-            models,
+            providers,
             IDM_MODEL_CLAUDE,
             &snap.strings.claude_label,
             if snap.show_claude {
@@ -1007,7 +1014,7 @@ fn show_context_menu(owner_hwnd: HWND) {
             },
         );
         append_item(
-            models,
+            providers,
             IDM_MODEL_CHATGPT,
             &snap.strings.chatgpt_label,
             if snap.show_chatgpt {
@@ -1016,7 +1023,17 @@ fn show_context_menu(owner_hwnd: HWND) {
                 MENU_ITEM_FLAGS(0)
             },
         );
-        append_submenu(menu, models, &snap.strings.models);
+        append_item(
+            providers,
+            IDM_MODEL_OPENCODE_GO,
+            &snap.strings.opencode_go_label,
+            if snap.show_opencode_go {
+                MF_CHECKED | MF_GRAYED
+            } else {
+                MF_GRAYED
+            },
+        );
+        append_submenu(menu, providers, &snap.strings.providers);
 
         let Ok(settings_menu) = CreatePopupMenu() else {
             log::error!("CreatePopupMenu(settings_menu) failed");
@@ -1250,24 +1267,18 @@ fn toggle_model(model: ProviderId) {
         let Some(s) = s.as_mut() else {
             return;
         };
-        match model {
-            ProviderId::Claude => s.settings.show_claude_code = !s.settings.show_claude_code,
-            ProviderId::ChatGpt => s.settings.show_codex = !s.settings.show_codex,
+        if !model.metadata().live_usage {
+            return;
         }
-        if !s.settings.show_claude_code && !s.settings.show_codex {
-            match model {
-                ProviderId::Claude => s.settings.show_claude_code = true,
-                ProviderId::ChatGpt => s.settings.show_codex = true,
-            }
+        s.settings.toggle_provider(model);
+        if !s.settings.has_enabled_live_provider() {
+            s.settings.set_provider_enabled(model, true);
         }
         (s.settings.clone(), s.is_dark)
     };
     settings::save(&settings);
 
-    let want = match model {
-        ProviderId::Claude => settings.show_claude_code,
-        ProviderId::ChatGpt => settings.show_codex,
-    };
+    let want = settings.is_provider_enabled(model);
     let existing = lock_state()
         .as_ref()
         .and_then(|s| s.bubbles.get(&model).copied());

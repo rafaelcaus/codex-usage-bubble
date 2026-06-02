@@ -7,7 +7,10 @@
 use crate::creds::Locator;
 use crate::net::Client;
 use crate::settings::Settings;
-use crate::usage::{anthropic::ClaudeProvider, chatgpt::ChatGptProvider, refresh, Error, ProviderId, UsageProvider, UsageWindows};
+use crate::usage::{
+    anthropic::ClaudeProvider, chatgpt::ChatGptProvider, refresh, Error, ProviderId, UsageProvider,
+    UsageWindows,
+};
 
 pub struct Registry {
     claude: ClaudeProvider,
@@ -28,20 +31,32 @@ impl Registry {
         settings: &Settings,
     ) -> Vec<(ProviderId, Result<UsageWindows, Error>)> {
         let mut out = Vec::new();
-        if settings.show_claude_code {
-            out.push((ProviderId::Claude, self.claude.poll(http)));
-        }
-        if settings.show_codex {
-            out.push((ProviderId::ChatGpt, self.chatgpt.poll(http)));
+        for provider in ProviderId::LIVE_USAGE {
+            if !settings.is_provider_enabled(provider) {
+                continue;
+            }
+            let result = match provider {
+                ProviderId::Claude => self.claude.poll(http),
+                ProviderId::ChatGpt => self.chatgpt.poll(http),
+                ProviderId::OpenCodeGo => {
+                    unreachable!("OpenCode Go has no live usage provider yet")
+                }
+            };
+            out.push((provider, result));
         }
         out
     }
 
     /// Attempt to refresh the active source for one provider.
-    pub fn try_refresh(&self, id: ProviderId, orchestrator: &refresh::Orchestrator) -> refresh::Outcome {
+    pub fn try_refresh(
+        &self,
+        id: ProviderId,
+        orchestrator: &refresh::Orchestrator,
+    ) -> refresh::Outcome {
         let locator = match id {
             ProviderId::Claude => self.claude.locator(),
             ProviderId::ChatGpt => self.chatgpt.locator(),
+            ProviderId::OpenCodeGo => return refresh::Outcome::CliMissing,
         };
         match locator.first_available() {
             Some(src) => orchestrator.refresh(src),

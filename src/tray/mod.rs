@@ -11,8 +11,8 @@ use std::sync::{Mutex, OnceLock};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING,
-    NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_INFOTIP_FLAGS,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_TIP, NIIF_INFO, NIIF_WARNING, NIM_ADD,
+    NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW, NOTIFY_ICON_INFOTIP_FLAGS,
 };
 use windows::Win32::UI::WindowsAndMessaging::DestroyIcon;
 
@@ -130,10 +130,7 @@ fn build_data(owner: HWND, kind: IconKind) -> NOTIFYICONDATAW {
 }
 
 fn icon_id(kind: IconKind) -> u32 {
-    match kind {
-        IconKind::Claude => 1,
-        IconKind::ChatGpt => 2,
-    }
+    kind.metadata().tray_icon_id
 }
 
 fn write_utf16(dst: &mut [u16], src: &str) {

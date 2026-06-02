@@ -107,6 +107,8 @@ fn window_duration_secs(model: ProviderId, window: UsageWindowKind) -> u64 {
         (ProviderId::Claude, UsageWindowKind::Secondary) => SEVEN_DAYS_SECS,
         (ProviderId::ChatGpt, UsageWindowKind::Primary) => FIVE_HOURS_SECS,
         (ProviderId::ChatGpt, UsageWindowKind::Secondary) => SEVEN_DAYS_SECS,
+        (ProviderId::OpenCodeGo, UsageWindowKind::Primary) => SEVEN_DAYS_SECS,
+        (ProviderId::OpenCodeGo, UsageWindowKind::Secondary) => 30 * 24 * 60 * 60,
     }
 }
 
@@ -1210,7 +1212,9 @@ mod fullscreen_tests {
     fn style_bits_allow_popup_or_borderless_windows_only() {
         assert!(window_style_bits_allow_fullscreen(WS_POPUP.0));
         assert!(window_style_bits_allow_fullscreen(0));
-        assert!(!window_style_bits_allow_fullscreen(WS_CAPTION.0 | WS_THICKFRAME.0));
+        assert!(!window_style_bits_allow_fullscreen(
+            WS_CAPTION.0 | WS_THICKFRAME.0
+        ));
         assert!(!window_style_bits_allow_fullscreen(WS_CHILD.0 | WS_POPUP.0));
     }
 
@@ -1922,7 +1926,12 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
                 }
                 SetTextColor(hdc, COLORREF(color.into_colorref()));
                 let weekly_pct_text = format!("{:.0}%", pct);
-                draw_tail_text_in_rect(hdc, &layout.tail_usage_pct_rect, &weekly_pct_text, DT_RIGHT);
+                draw_tail_text_in_rect(
+                    hdc,
+                    &layout.tail_usage_pct_rect,
+                    &weekly_pct_text,
+                    DT_RIGHT,
+                );
             }
         }
 
@@ -1932,7 +1941,12 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         SelectObject(hdc, main_font);
         SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
         if !inputs.weekly_text.is_empty() {
-            draw_tail_text_in_rect(hdc, &layout.tail_time_text_rect, &inputs.weekly_text, DT_RIGHT);
+            draw_tail_text_in_rect(
+                hdc,
+                &layout.tail_time_text_rect,
+                &inputs.weekly_text,
+                DT_RIGHT,
+            );
         }
 
         SelectObject(hdc, prev_font);
@@ -2022,6 +2036,7 @@ fn default_position(width_px: i32, height_px: i32, model: ProviderId) -> (i32, i
         let stagger = match model {
             ProviderId::Claude => 0,
             ProviderId::ChatGpt => height_px + gap,
+            ProviderId::OpenCodeGo => 2 * (height_px + gap),
         };
         let x = wa.right - width_px - gap;
         let y = wa.bottom - height_px - gap - stagger;

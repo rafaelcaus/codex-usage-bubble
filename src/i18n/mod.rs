@@ -28,9 +28,10 @@ pub struct LocaleStrings {
     pub five_minutes: String,
     pub fifteen_minutes: String,
     pub one_hour: String,
-    pub models: String,
+    pub providers: String,
     pub claude_label: String,
     pub chatgpt_label: String,
+    pub opencode_go_label: String,
     pub settings: String,
     pub start_with_windows: String,
     pub reset_position: String,
@@ -292,7 +293,9 @@ mod tests {
             let strings = file.strings;
             for (name, value) in [
                 ("size_smaller", strings.size_smaller.as_str()),
+                ("providers", strings.providers.as_str()),
                 ("size_larger", strings.size_larger.as_str()),
+                ("opencode_go_label", strings.opencode_go_label.as_str()),
                 ("reset_size", strings.reset_size.as_str()),
                 ("controls", strings.controls.as_str()),
                 ("control_left_click", strings.control_left_click.as_str()),
@@ -332,6 +335,26 @@ mod tests {
         assert!(
             toml::from_str::<LocaleFile>(&malformed_control).is_err(),
             "malformed control_tray_click should fail locale deserialization"
+        );
+    }
+
+    #[test]
+    fn locale_schema_rejects_missing_provider_strings() {
+        let (_, fallback_body) = RAW_LOCALES
+            .iter()
+            .find(|(code, _)| *code == FALLBACK_CODE)
+            .expect("fallback locale fixture must exist");
+
+        let missing_providers = fallback_body.replace("providers = \"Providers\"\n", "");
+        assert!(
+            toml::from_str::<LocaleFile>(&missing_providers).is_err(),
+            "missing providers should fail locale deserialization"
+        );
+
+        let missing_opencode = fallback_body.replace("opencode_go_label = \"OpenCode Go\"\n", "");
+        assert!(
+            toml::from_str::<LocaleFile>(&missing_opencode).is_err(),
+            "missing opencode_go_label should fail locale deserialization"
         );
     }
 }

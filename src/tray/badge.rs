@@ -43,7 +43,13 @@ fn render_pixmap(kind: ProviderId, percent: Option<f64>) -> Pixmap {
         let mut pb = PathBuilder::new();
         pb.push_circle(cx, cy, inner);
         if let Some(path) = pb.finish() {
-            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
     }
 
@@ -112,6 +118,8 @@ fn base_color(kind: ProviderId) -> [u8; 3] {
         ProviderId::Claude => [0x2a, 0x1f, 0x1c],
         // Cool dark slate for ChatGPT/Codex.
         ProviderId::ChatGpt => [0x1a, 0x1f, 0x26],
+        // Deep green for OpenCode Go.
+        ProviderId::OpenCodeGo => [0x12, 0x2a, 0x20],
     }
 }
 
