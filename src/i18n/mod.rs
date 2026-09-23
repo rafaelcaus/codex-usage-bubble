@@ -44,6 +44,11 @@ pub struct LocaleStrings {
     pub exit: String,
     pub restart: String,
     pub show_widget: String,
+    pub only_over_chatgpt: String,
+    pub used_word: String,
+    pub remaining_word: String,
+    pub reset_prefix: String,
+    pub tokens_prefix: String,
     pub session_window: String,
     pub weekly_window: String,
     pub now: String,
@@ -126,6 +131,11 @@ fn english_strings() -> LocaleStrings {
         exit: "Exit".into(),
         restart: "Restart".into(),
         show_widget: "Show widget".into(),
+        only_over_chatgpt: "Somente sobre o ChatGPT".into(),
+        used_word: "usada".into(),
+        remaining_word: "resta".into(),
+        reset_prefix: "Falta para resetar".into(),
+        tokens_prefix: "Tokens neste PC desde o reset".into(),
         session_window: "5h".into(),
         weekly_window: "7d".into(),
         now: "now".into(),
@@ -137,8 +147,8 @@ fn english_strings() -> LocaleStrings {
         token_expired_body: "Sign in again to keep tracking your usage.".into(),
         chatgpt_token_expired_title: "Codex session expired".into(),
         chatgpt_token_expired_body: "Sign in again to keep tracking your usage.".into(),
-        threshold_80_body: "Approaching the 5-hour limit.".into(),
-        threshold_95_body: "Limit is close - consider easing up.".into(),
+        threshold_80_body: "Approaching the weekly limit.".into(),
+        threshold_95_body: "Weekly limit is close - consider easing up.".into(),
         update_applied_title: "Update applied".into(),
         update_applied_body: "Updated to v".into(),
         update_rollback_failed_body: "Update failed. Your original binary is saved at: ".into(),
@@ -156,6 +166,49 @@ pub fn format_window(window: &crate::usage::Window, strings: &LocaleStrings) -> 
         pct
     } else {
         format!("{pct} \u{00b7} {cd}")
+    }
+}
+
+/// Fork (Rafael): explicit "used x remaining" window text, e.g.
+/// "3% usada · 97% resta · 6d". Used by the expanded panel and tray
+/// tooltip so it is always clear what was consumed vs. what is left.
+pub fn format_window_remaining(window: &crate::usage::Window, strings: &LocaleStrings) -> String {
+    let used = window.utilization.clamp(0.0, 100.0);
+    let left = (100.0 - used).clamp(0.0, 100.0);
+    let base = format!(
+        "{:.0}% {} · {:.0}% {}",
+        used, strings.used_word, left, strings.remaining_word
+    );
+    let cd = format_countdown(window.resets_at, strings);
+    if cd.is_empty() {
+        base
+    } else {
+        format!("{base} · {cd}")
+    }
+}
+
+/// Fork (Rafael): precise two-unit countdown — "6d 3h", "5h 12m", "3m 20s".
+/// Used by the expanded panel's "time left to reset" line.
+pub fn format_precise_countdown(resets_at: Option<SystemTime>, strings: &LocaleStrings) -> String {
+    let Some(reset) = resets_at else {
+        return String::new();
+    };
+    let secs = match reset.duration_since(SystemTime::now()) {
+        Ok(d) => d.as_secs(),
+        Err(_) => return strings.now.clone(),
+    };
+    let d = secs / 86_400;
+    let h = secs % 86_400 / 3_600;
+    let m = secs % 3_600 / 60;
+    let s = secs % 60;
+    if d >= 1 {
+        format!("{d}{} {h}{}", strings.day_suffix, strings.hour_suffix)
+    } else if h >= 1 {
+        format!("{h}{} {m}{}", strings.hour_suffix, strings.minute_suffix)
+    } else if m >= 1 {
+        format!("{m}{} {s}{}", strings.minute_suffix, strings.second_suffix)
+    } else {
+        format!("{s}{}", strings.second_suffix)
     }
 }
 

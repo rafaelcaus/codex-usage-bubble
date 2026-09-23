@@ -5,8 +5,10 @@ use serde::Deserialize;
 use crate::net::Client;
 
 const ASSET_NAME: &str = "claude-code-usage-bubble.exe";
-const REPO_OWNER: &str = "tiennm99";
-const REPO_NAME: &str = "claude-code-usage-bubble";
+// Fork (Rafael): self-update feed points at our own GitHub repo so every PC
+// running this fork receives fork releases (never the upstream build).
+const REPO_OWNER: &str = "rafaelcaus";
+const REPO_NAME: &str = "codex-usage-bubble";
 
 #[derive(Clone, Debug)]
 pub struct Release {

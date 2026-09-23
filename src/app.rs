@@ -74,6 +74,8 @@ const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
 const IDM_RESET_SIZE: u16 = 36;
+// Fork (Rafael): focus-follow toggle — bubbles only over the ChatGPT app.
+const IDM_ONLY_CHATGPT: u16 = 37;
 // 50 is reserved by tray::IDM_TOGGLE_WIDGET — keep the auto-update range
 // clear of it (and any future tray ids in the 5x band).
 const IDM_UPDATE_AUTO_OFF: u16 = 60;
@@ -131,6 +133,10 @@ struct ProviderUiState {
     windows: UsageWindows,
     primary_text: String,
     secondary_text: String,
+    /// Fork: "Falta para resetar: 6d 3h" (weekly window, precise).
+    reset_text: String,
+    /// Fork: "Tokens neste PC desde o reset: 1.234.567" (local sessions).
+    tokens_text: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -252,6 +258,14 @@ pub fn run(args: crate::AppArgs) {
     });
 
     create_initial_bubbles();
+    // Fork (Rafael): push the persisted focus-follow flag into the bubble
+    // module so the 0.35s foreground check enforces it from the first tick.
+    bubble::set_only_over_chatgpt(
+        lock_state()
+            .as_ref()
+            .map(|s| s.settings.only_over_chatgpt)
+            .unwrap_or(true),
+    );
     refresh_tray_icons();
 
     // Post-update tasks: show "Updated to vX.Y.Z" balloon (driven by
@@ -389,6 +403,7 @@ unsafe extern "system" fn msg_wnd_proc(
 // ---------- Bubble callbacks ----------
 
 fn on_bubble_click(hwnd: HWND, model: ProviderId) {
+    log::info!("bubble click (no drag): toggle panel for {model:?}");
     let data = build_panel_data(model);
     panel::toggle(data, hwnd);
 }
@@ -418,6 +433,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_MODEL_CHATGPT => toggle_model(ProviderId::ChatGpt),
         IDM_MODEL_OPENCODE_GO => {}
         IDM_START_WITH_WINDOWS => toggle_startup(),
+        IDM_ONLY_CHATGPT => toggle_only_over_chatgpt(),
         IDM_RESET_POSITION => reset_positions(),
         IDM_VERSION_ACTION => version_action(),
         IDM_SIZE_SMALLER => resize_bubbles(-bubble::RESIZE_STEP_LOGICAL),
@@ -529,6 +545,8 @@ fn apply_results(
             match outcome {
                 Ok(windows) => {
                     let entry = state.snapshots.entry(id).or_default();
+                    // Fork: thresholds watch the PRIMARY window, which IS the
+                    // weekly quota on the Pro plan (verified vs desktop app).
                     let old_pct = entry.windows.primary.utilization;
                     let new_pct = windows.primary.utilization;
                     // Fire a balloon only the cycle a provider CROSSES a
@@ -540,8 +558,11 @@ fn apply_results(
                         }
                     }
                     entry.windows = windows;
-                    entry.primary_text = i18n::format_window(&windows.primary, &strings);
-                    entry.secondary_text = i18n::format_window(&windows.secondary, &strings);
+                    entry.primary_text =
+                        i18n::format_window_remaining(&windows.primary, &strings);
+                    entry.secondary_text =
+                        i18n::format_window_remaining(&windows.secondary, &strings);
+                    refresh_detail_texts(entry, id, &strings);
                     any_ok = true;
                 }
                 Err(usage::Error::AuthRequired | usage::Error::TokenExpired) => {
@@ -589,6 +610,37 @@ fn attempt_refresh(failures: Vec<ProviderId>, registry: &Arc<Mutex<Registry>>) {
     }
 }
 
+/// Fork (Rafael): weekly precise-reset + local-tokens lines for the
+/// expanded panel and tray tooltip. Token counting runs only for Codex and
+/// is fingerprint-cached inside `codex_tokens`, so the per-minute refresh
+/// stays cheap.
+fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &LocaleStrings) {
+    // Fork: boundaries use the PRIMARY window = weekly quota on Pro.
+    let cd = i18n::format_precise_countdown(entry.windows.primary.resets_at, strings);
+    entry.reset_text = if cd.is_empty() {
+        format!("{}: -", strings.reset_prefix)
+    } else {
+        format!("{}: {}", strings.reset_prefix, cd)
+    };
+    entry.tokens_text = if id == ProviderId::ChatGpt {
+        match entry
+            .windows
+            .primary
+            .resets_at
+            .and_then(crate::codex_tokens::tokens_since_reset)
+        {
+            Some(n) => format!(
+                "{}: {}",
+                strings.tokens_prefix,
+                crate::codex_tokens::format_tokens(n)
+            ),
+            None => format!("{}: -", strings.tokens_prefix),
+        }
+    } else {
+        format!("{}: -", strings.tokens_prefix)
+    };
+}
+
 fn refresh_countdowns() {
     {
         let mut s = lock_state();
@@ -596,9 +648,12 @@ fn refresh_countdowns() {
             return;
         };
         let strings = s.i18n.strings().clone();
-        for entry in s.snapshots.values_mut() {
-            entry.primary_text = i18n::format_window(&entry.windows.primary, &strings);
-            entry.secondary_text = i18n::format_window(&entry.windows.secondary, &strings);
+        for (id, entry) in s.snapshots.iter_mut() {
+            entry.primary_text =
+                i18n::format_window_remaining(&entry.windows.primary, &strings);
+            entry.secondary_text =
+                i18n::format_window_remaining(&entry.windows.secondary, &strings);
+            refresh_detail_texts(entry, *id, &strings);
         }
     }
     propagate_to_ui();
@@ -623,19 +678,28 @@ fn propagate_to_ui() {
 
     for (kind, hwnd) in snap.bubbles.iter() {
         let entry = snap.snapshots.get(kind);
+        // Fork (Rafael): on the Pro plan the PRIMARY window IS the weekly
+        // quota (verified against the desktop app: 3% used = 97% left).
+        // The bubble shows primary only; the unused secondary slot is fed
+        // the same values so every consumer stays consistent.
         let session_pct = entry.map(|s| s.windows.primary.utilization);
-        let weekly_pct = entry.map(|s| s.windows.secondary.utilization);
-        // The bubble paints the percent inline inside the bar fill, so it
-        // only needs the countdown string on the right. The panel still
-        // shows the combined "X% · Yh" string via `primary_text`.
+        let weekly_pct = entry.map(|s| s.windows.primary.utilization);
+        // The bubble paints the percent inline inside the ring/bar fill, so
+        // the caption only needs the PRECISE countdown ("6d 3h").
+        // The panel shows the combined "X% usada · Y% resta · Zh" strings.
         let session_text = entry
-            .map(|s| i18n::format_countdown(s.windows.primary.resets_at, &snap.i18n_strings))
+            .map(|s| {
+                i18n::format_precise_countdown(s.windows.primary.resets_at, &snap.i18n_strings)
+            })
             .unwrap_or_default();
         let weekly_text = entry
-            .map(|s| i18n::format_countdown(s.windows.secondary.resets_at, &snap.i18n_strings))
+            .map(|s| i18n::format_countdown(s.windows.primary.resets_at, &snap.i18n_strings))
             .unwrap_or_default();
         let session_resets_at = entry.and_then(|s| s.windows.primary.resets_at);
-        let weekly_resets_at = entry.and_then(|s| s.windows.secondary.resets_at);
+        let weekly_resets_at = entry.and_then(|s| s.windows.primary.resets_at);
+        log::info!(
+            "bubble data: pct={session_pct:?} countdown='{session_text}' weekly_reset={weekly_resets_at:?}"
+        );
         bubble::update_data(
             hwnd.to_hwnd(),
             session_pct,
@@ -676,12 +740,16 @@ fn build_panel_data(model: ProviderId) -> PanelData {
     };
     let strings = s.i18n.strings().clone();
     let provider_state = s.snapshots.get(&model).cloned().unwrap_or_default();
+    // Fork: the panel's single usage row shows the PRIMARY window, which IS
+    // the weekly quota on the Pro plan (label stays "7d").
     PanelData {
         model,
         session_pct: provider_state.windows.primary.utilization,
-        session_text: provider_state.primary_text,
-        weekly_pct: provider_state.windows.secondary.utilization,
-        weekly_text: provider_state.secondary_text,
+        session_text: provider_state.primary_text.clone(),
+        weekly_pct: provider_state.windows.primary.utilization,
+        weekly_text: provider_state.primary_text.clone(),
+        reset_text: provider_state.reset_text,
+        tokens_text: provider_state.tokens_text,
         is_dark: s.is_dark,
         strings,
     }
@@ -692,8 +760,10 @@ fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiSta
         model,
         session_pct: p.windows.primary.utilization,
         session_text: p.primary_text.clone(),
-        weekly_pct: p.windows.secondary.utilization,
-        weekly_text: p.secondary_text.clone(),
+        weekly_pct: p.windows.primary.utilization,
+        weekly_text: p.primary_text.clone(),
+        reset_text: p.reset_text.clone(),
+        tokens_text: p.tokens_text.clone(),
         is_dark: snap.is_dark,
         strings: snap.i18n_strings.clone(),
     }
@@ -707,6 +777,8 @@ fn placeholder_panel(model: ProviderId) -> PanelData {
         session_text: String::new(),
         weekly_pct: 0.0,
         weekly_text: String::new(),
+        reset_text: String::new(),
+        tokens_text: String::new(),
         is_dark: false,
         strings,
     }
@@ -760,6 +832,7 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
         icons.push(TrayIconData {
             kind: provider,
             percent: if snap.last_poll_ok {
+                // Fork: tray badge tracks the PRIMARY window = weekly quota.
                 entry.map(|e| e.windows.primary.utilization)
             } else {
                 None
@@ -775,17 +848,22 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
 }
 
 fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleStrings) -> String {
-    let session = entry
-        .map(|e| e.primary_text.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("...");
+    // Fork: weekly-only tooltip with precise reset + local tokens.
     let weekly = entry
         .map(|e| e.secondary_text.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("...");
+    let reset = entry
+        .map(|e| e.reset_text.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("...");
+    let tokens = entry
+        .map(|e| e.tokens_text.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("...");
     format!(
-        "{label}\n{}: {session}\n{}: {weekly}\n{}",
-        strings.session_window, strings.weekly_window, strings.tray_left_click
+        "{label}\n{}: {weekly}\n{reset}\n{tokens}\n{}",
+        strings.weekly_window, strings.tray_left_click
     )
 }
 
@@ -930,6 +1008,7 @@ struct ContextMenuSnapshot {
     show_chatgpt: bool,
     show_opencode_go: bool,
     widget_visible: bool,
+    only_over_chatgpt: bool,
     install_channel: InstallChannel,
     update_status: UpdateStatus,
     bubble_size_logical: i32,
@@ -945,6 +1024,7 @@ fn show_context_menu(owner_hwnd: HWND) {
             show_chatgpt: s.settings.show_codex,
             show_opencode_go: s.settings.show_opencode_go,
             widget_visible: s.settings.widget_visible,
+            only_over_chatgpt: s.settings.only_over_chatgpt,
             install_channel: s.install_channel,
             update_status: s.update_status,
             bubble_size_logical: s.settings.bubble_size_logical,
@@ -1027,6 +1107,16 @@ fn show_context_menu(owner_hwnd: HWND) {
             IDM_START_WITH_WINDOWS,
             &snap.strings.start_with_windows,
             if is_startup_enabled() {
+                MF_CHECKED
+            } else {
+                MENU_ITEM_FLAGS(0)
+            },
+        );
+        append_item(
+            settings_menu,
+            IDM_ONLY_CHATGPT,
+            &snap.strings.only_over_chatgpt,
+            if snap.only_over_chatgpt {
                 MF_CHECKED
             } else {
                 MENU_ITEM_FLAGS(0)
@@ -1243,6 +1333,21 @@ fn toggle_model(model: ProviderId) {
     }
     refresh_tray_icons();
     spawn_poll_thread();
+}
+
+/// Fork (Rafael): focus-follow toggle. Persists to settings and pushes the
+/// flag into the bubble module (which enforces it on its 0.35s check timer).
+fn toggle_only_over_chatgpt() {
+    let (enabled, snap) = {
+        let mut s = lock_state();
+        let Some(s) = s.as_mut() else {
+            return;
+        };
+        s.settings.only_over_chatgpt = !s.settings.only_over_chatgpt;
+        (s.settings.only_over_chatgpt, s.settings.clone())
+    };
+    settings::save(&snap);
+    bubble::set_only_over_chatgpt(enabled);
 }
 
 fn toggle_widget_visibility() {

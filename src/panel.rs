@@ -21,12 +21,14 @@ use crate::os::{to_utf16_nul as wide_str, Rgb as Color};
 use crate::usage::ProviderId;
 
 const CLASS_NAME: &str = "ClaudeCodeUsageBubblePanel";
-const PANEL_W_LOGICAL: i32 = 280;
-const PANEL_H_LOGICAL: i32 = 120;
+// Fork (Rafael): widened + taller — weekly bar row plus "reset" and "tokens"
+// detail lines (5h row removed: Pro plan = weekly credits only).
+const PANEL_W_LOGICAL: i32 = 380;
+const PANEL_H_LOGICAL: i32 = 150;
 const PADDING_LOGICAL: i32 = 14;
 const ROW_GAP_LOGICAL: i32 = 8;
 const LABEL_W_LOGICAL: i32 = 28;
-const RIGHT_TEXT_W_LOGICAL: i32 = 96;
+const RIGHT_TEXT_W_LOGICAL: i32 = 200;
 const BAR_HEIGHT_LOGICAL: i32 = 14;
 
 pub struct PanelData {
@@ -35,6 +37,8 @@ pub struct PanelData {
     pub session_text: String,
     pub weekly_pct: f64,
     pub weekly_text: String,
+    pub reset_text: String,
+    pub tokens_text: String,
     pub is_dark: bool,
     pub strings: LocaleStrings,
 }
@@ -94,9 +98,11 @@ pub fn current_model() -> Option<ProviderId> {
 /// If a panel is already visible, hide it instead (toggle).
 pub fn toggle(data: PanelData, anchor_hwnd: HWND) {
     if is_visible() && current_model() == Some(data.model) {
+        log::info!("panel toggle: hide (was visible)");
         hide();
         return;
     }
+    log::info!("panel toggle: show");
     show(data, anchor_hwnd);
 }
 
@@ -291,8 +297,6 @@ fn paint(hwnd: HWND, hdc: HDC) {
     } else {
         Color::from_hex("#D6D6D6")
     };
-    let session_accent =
-        crate::usage_color::bar_fill_color(data.model, data.is_dark, data.session_pct);
     let weekly_accent =
         crate::usage_color::bar_fill_color(data.model, data.is_dark, data.weekly_pct);
 
@@ -335,29 +339,14 @@ fn paint(hwnd: HWND, hdc: HDC) {
         let bar_w =
             rc.right - bar_x - scaled(PADDING_LOGICAL) - scaled(RIGHT_TEXT_W_LOGICAL) - scaled(4);
         let row1_y = scaled(PADDING_LOGICAL) + scaled(24);
-        let row2_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(ROW_GAP_LOGICAL) + scaled(8);
 
-        draw_row(
-            hdc,
-            &data.strings.session_window,
-            scaled(PADDING_LOGICAL),
-            row1_y,
-            bar_x,
-            bar_w,
-            scaled(BAR_HEIGHT_LOGICAL),
-            data.session_pct,
-            &data.session_text,
-            text_color,
-            track,
-            session_accent,
-            dpi,
-        );
-
+        // Fork: weekly-only (Pro plan). Single usage row, then the precise
+        // reset countdown and the local-sessions token count.
         draw_row(
             hdc,
             &data.strings.weekly_window,
             scaled(PADDING_LOGICAL),
-            row2_y,
+            row1_y,
             bar_x,
             bar_w,
             scaled(BAR_HEIGHT_LOGICAL),
@@ -366,6 +355,32 @@ fn paint(hwnd: HWND, hdc: HDC) {
             text_color,
             track,
             weekly_accent,
+            dpi,
+        );
+
+        let line1_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(12);
+        let line2_y = line1_y + scaled(22);
+        let text_w = rc.right - 2 * scaled(PADDING_LOGICAL);
+        draw_text(
+            hdc,
+            &data.reset_text,
+            text_color,
+            scaled(PADDING_LOGICAL),
+            line1_y,
+            text_w,
+            scaled(18),
+            false,
+            dpi,
+        );
+        draw_text(
+            hdc,
+            &data.tokens_text,
+            text_color,
+            scaled(PADDING_LOGICAL),
+            line2_y,
+            text_w,
+            scaled(18),
+            false,
             dpi,
         );
     }
@@ -507,6 +522,8 @@ fn clone_data() -> Option<PanelData> {
         session_text: p.data.session_text.clone(),
         weekly_pct: p.data.weekly_pct,
         weekly_text: p.data.weekly_text.clone(),
+        reset_text: p.data.reset_text.clone(),
+        tokens_text: p.data.tokens_text.clone(),
         is_dark: p.data.is_dark,
         strings: p.data.strings.clone(),
     })

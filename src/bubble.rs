@@ -1,9 +1,10 @@
-// Floating stadium-shaped bubble window.
+// Floating vertical-pill bubble window.
 //
 // Top-level window with WS_POPUP + WS_EX_LAYERED + WS_EX_TOPMOST + WS_EX_NOACTIVATE.
-// The shape is a stadium (rounded-rect with corner_radius = height/2). The left
-// half is the "head" — usage and remaining-time rings around the 5h percentage
-// glyph. The right half is the "tail" — weekly usage and remaining-time bars.
+// The shape is a vertical pill (rounded-rect with corner_radius = width/2).
+// Top holds the progress ring (PRIMARY window = weekly quota on Pro)
+// with "RESTA" + big remaining-% glyph. Below it, a single countdown
+// caption: precise time left to the weekly reset. Nothing else.
 //
 // Painting is hybrid: tiny-skia renders the shape (AA fills + AA stroked arc)
 // into a Pixmap; the Pixmap is copied byte-for-byte into a 32bpp BI_RGB DIB;
@@ -13,17 +14,22 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
-use windows::core::PCWSTR;
+use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
+use windows::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Shell::{
     ExtractIconExW, SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS,
@@ -47,9 +53,9 @@ use crate::usage::ProviderId;
 // `bubble_height_logical`) — aspect tapers from 3:1 at the small end toward
 // 2.6:1 at the large end so the bars look proportionally chunkier as the
 // bubble grows.
-pub const MIN_BUBBLE_SIZE: i32 = 140;
+    pub const MIN_BUBBLE_SIZE: i32 = 50;
 pub const MAX_BUBBLE_SIZE: i32 = 360;
-pub const DEFAULT_BUBBLE_SIZE: i32 = 200;
+    pub const DEFAULT_BUBBLE_SIZE: i32 = 50;
 pub const RESIZE_STEP_LOGICAL: i32 = 20;
 const SNAP_ZONE_LOGICAL: i32 = 12;
 const CORNER_SNAP_ZONE_LOGICAL: i32 = 32;
@@ -57,23 +63,10 @@ const CORNER_INSET_LOGICAL: i32 = 12;
 const TASKBAR_GAP_LOGICAL: i32 = 4;
 const PEER_ALIGN_TOLERANCE_LOGICAL: i32 = 8;
 const CLASS_NAME: &str = "ClaudeCodeUsageBubble";
-const FULLSCREEN_POLL_MS: u32 = 1500;
+const FULLSCREEN_POLL_MS: u32 = 350;
 const FULLSCREEN_EDGE_TOLERANCE_PX: i32 = 2;
 const FIVE_HOURS_SECS: u64 = 5 * 60 * 60;
 const SEVEN_DAYS_SECS: u64 = 7 * 24 * 60 * 60;
-
-/// (num, den) such that bubble_height = (width * den) / num. 3:1 below 200,
-/// 2.8:1 below 280, 2.6:1 above — the bubble gets a touch taller as it
-/// grows so the wider bars don't look anaemic.
-fn aspect_at_width(w_logical: i32) -> (i32, i32) {
-    if w_logical <= 200 {
-        (3, 1)
-    } else if w_logical <= 280 {
-        (14, 5) // 2.8 : 1
-    } else {
-        (13, 5) // 2.6 : 1
-    }
-}
 
 pub struct BubbleConfig {
     pub model: ProviderId,
@@ -88,9 +81,17 @@ pub struct BubbleConfig {
     pub is_dark: bool,
 }
 
+/// Fork (Rafael): minimal vertical card — ring + ONE countdown caption.
+/// Height is computed from the exact same content math as the layout below
+/// (in logical units), so the window always fits its content at any DPI.
 fn bubble_height_logical(width_logical: i32) -> i32 {
-    let (num, den) = aspect_at_width(width_logical);
-    ((width_logical * den) / num).max(20)
+    let pad = width_logical * 6 / 100;
+    let ring = width_logical - 2 * pad;
+    let big = (ring * 24 / 100).max(4);
+    let small = ((big * 40) / 100).max(3);
+    let cap = small + 2;
+    let g1 = (ring * 8 / 100).max(2);
+    pad + ring + g1 + cap + pad + 2
 }
 
 #[derive(Clone, Copy)]
@@ -249,6 +250,8 @@ pub fn create(config: BubbleConfig) -> HWND {
             drag_start_pos: None,
             hidden_by_fullscreen: false,
             user_hidden: false,
+            hidden_by_focus: false,
+            focus_miss_count: 0,
             pulse_phase: 0,
             pulse_timer_armed: false,
             time_progress_timer_armed: false,
@@ -462,6 +465,13 @@ struct BubbleState {
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
     user_hidden: bool,
+    /// Fork (Rafael): focus-follow ("Somente sobre o ChatGPT") hid the bubble
+    /// because the foreground window is not the ChatGPT app nor our own UI.
+    hidden_by_focus: bool,
+    /// Fork: consecutive foreground ticks NOT on ChatGPT. Hides only after
+    /// 2 in a row so a split-second focus steal (alt+tab transit, toast)
+    /// doesn't flicker the bubble.
+    focus_miss_count: u8,
     /// Frame counter for the ≥95% pulse animation. Increments on each
     /// TIMER_PULSE tick when at least one bar is in the alarm band.
     pulse_phase: u32,
@@ -514,7 +524,10 @@ unsafe extern "system" fn wnd_proc(
             let mut current = RECT::default();
             let _ = GetWindowRect(hwnd, &mut current);
             let moved = match start {
-                Some((sx, sy)) => (current.left - sx).abs() >= 3 || (current.top - sy).abs() >= 3,
+                // Fork: 8px instead of 3px — tiny accidental pointer slips on
+                // a quick click must still count as a click (opens the panel),
+                // not as a drag.
+                Some((sx, sy)) => (current.left - sx).abs() >= 8 || (current.top - sy).abs() >= 8,
                 None => false,
             };
             if moved {
@@ -619,7 +632,7 @@ fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     }
     let w = r.right - r.left;
     let h = r.bottom - r.top;
-    let radius = corner_radius_px(h);
+    let radius = corner_radius_px(w, h);
     // Local coordinates relative to top-left of the bubble.
     let lx = pt.x - r.left;
     let ly = pt.y - r.top;
@@ -630,8 +643,8 @@ fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     }
 }
 
-fn corner_radius_px(height_px: i32) -> i32 {
-    height_px / 2
+fn corner_radius_px(w: i32, h: i32) -> i32 {
+    w.min(h) / 2
 }
 
 fn point_in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
@@ -993,6 +1006,163 @@ fn check_fullscreen(bubble_hwnd: HWND) {
         show_after_fullscreen(bubble_hwnd, user_hidden);
         log_fullscreen_decision("show", &evaluation, user_hidden);
     }
+
+    check_focus_follow(bubble_hwnd, fg);
+}
+
+// ---------- Fork (Rafael): focus-follow ("Somente sobre o ChatGPT") ----------
+
+/// Master switch, pushed from `app` (settings + Settings-menu toggle).
+static ONLY_OVER_CHATGPT: AtomicBool = AtomicBool::new(true);
+
+pub fn set_only_over_chatgpt(enabled: bool) {
+    ONLY_OVER_CHATGPT.store(enabled, Ordering::Relaxed);
+}
+
+/// File name of the ChatGPT desktop app (which also hosts Codex mode).
+const CHATGPT_EXE: &str = "ChatGPT.exe";
+
+/// Runs on the same 0.35s foreground timer as the fullscreen check: hides the
+/// bubble while the user works in any other app, shows it again when ChatGPT
+/// (or our own bubble/panel/menu, which share our PID) takes the foreground.
+fn check_focus_follow(bubble_hwnd: HWND, fg: HWND) {
+    if !ONLY_OVER_CHATGPT.load(Ordering::Relaxed) {
+        // Feature off: release any focus-hide so the bubble comes back.
+        let needs_show = {
+            let mut bubbles = lock_bubbles();
+            match bubbles.get_mut(&(bubble_hwnd.0 as isize)) {
+                Some(b) if b.hidden_by_focus => {
+                    b.hidden_by_focus = false;
+                    !b.hidden_by_fullscreen && !b.user_hidden
+                }
+                _ => false,
+            }
+        };
+        if needs_show {
+            unsafe {
+                let _ = ShowWindow(bubble_hwnd, SW_SHOWNOACTIVATE);
+            }
+            render(bubble_hwnd);
+        }
+        return;
+    }
+
+    let chatgpt_fg = foreground_is_chatgpt_or_own(bubble_hwnd, fg);
+    let (hidden_by_focus, hidden_by_fs, user_hidden, miss_count) = {
+        let bubbles = lock_bubbles();
+        match bubbles.get(&(bubble_hwnd.0 as isize)) {
+            Some(b) => (
+                b.hidden_by_focus,
+                b.hidden_by_fullscreen,
+                b.user_hidden,
+                b.focus_miss_count,
+            ),
+            None => return,
+        }
+    };
+
+    if chatgpt_fg {
+        if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
+            b.focus_miss_count = 0;
+        }
+        if hidden_by_focus {
+            if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
+                b.hidden_by_focus = false;
+            }
+            if !hidden_by_fs && !user_hidden {
+                unsafe {
+                    let _ = ShowWindow(bubble_hwnd, SW_SHOWNOACTIVATE);
+                }
+                render(bubble_hwnd);
+            }
+            log::info!(
+                "focus-follow: show (ChatGPT in foreground: {})",
+                describe_foreground(fg)
+            );
+        }
+        return;
+    }
+
+    // Not on ChatGPT: hide only after 2 consecutive misses (~0.7s) so a
+    // transient focus steal doesn't flicker the bubble.
+    let misses = miss_count.saturating_add(1);
+    if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
+        b.focus_miss_count = misses;
+    }
+    if misses >= 2 && !hidden_by_focus && !user_hidden {
+        unsafe {
+            let _ = ShowWindow(bubble_hwnd, SW_HIDE);
+        }
+        if let Some(b) = lock_bubbles().get_mut(&(bubble_hwnd.0 as isize)) {
+            b.hidden_by_focus = true;
+        }
+        log::info!(
+            "focus-follow: hide (foreground is not ChatGPT: {})",
+            describe_foreground(fg)
+        );
+    }
+}
+
+/// True when the foreground window belongs to the ChatGPT desktop app or to
+/// our own UI (bubble/panel/context menu share our PID, so interacting with
+/// them never hides the bubble). Fails open: an unidentifiable foreground
+/// window keeps the bubble visible rather than hiding it.
+fn foreground_is_chatgpt_or_own(bubble_hwnd: HWND, fg: HWND) -> bool {
+    if fg == HWND::default() || fg == bubble_hwnd {
+        return true;
+    }
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(fg, Some(&mut pid as *mut u32)) };
+    if pid == 0 {
+        return true;
+    }
+    if pid == unsafe { GetCurrentProcessId() } {
+        return true;
+    }
+    match foreground_image_file_name(pid) {
+        Some(name) => name.eq_ignore_ascii_case(CHATGPT_EXE),
+        None => true,
+    }
+}
+
+/// Short foreground description for focus-follow log lines, e.g.
+/// `ChatGPT.exe`, `chrome.exe`, `own-ui` or `unknown(pid=1234)`.
+fn describe_foreground(fg: HWND) -> String {
+    if fg == HWND::default() {
+        return String::from("none");
+    }
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(fg, Some(&mut pid as *mut u32)) };
+    if pid == 0 {
+        return String::from("unknown(pid=0)");
+    }
+    if pid == unsafe { GetCurrentProcessId() } {
+        return String::from("own-ui");
+    }
+    match foreground_image_file_name(pid) {
+        Some(name) => name,
+        None => format!("unidentified(pid={pid})"),
+    }
+}
+
+fn foreground_image_file_name(pid: u32) -> Option<String> {    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut len: u32 = 512;
+        let mut buf = vec![0u16; len as usize];
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+        if !ok {
+            return None;
+        }
+        let full = String::from_utf16_lossy(&buf[..len as usize]);
+        full.rsplit(['\\', '/']).next().map(|s| s.to_string())
+    }
 }
 
 struct FullscreenEvaluation {
@@ -1249,28 +1419,24 @@ mod fullscreen_tests {
 // Sized for the widest English countdown text the bubble renders.
 const COUNTDOWN_TEMPLATE: &str = "999d";
 
-/// Geometry for the bubble's "circle head + pill tail" shape, in DPI-scaled pixels.
+/// Geometry for the fork's vertical minimalist card, in DPI-scaled pixels.
 ///
-/// The outline is a stadium (rounded rect with `corner_radius = canvas_h / 2`).
-/// The left `head_diameter × canvas_h` square holds the 5h progress ring + big
-/// percent glyph. The rest is the tail: weekly usage lane + reset-time lane.
+/// The outline is a vertical pill (`corner_radius = canvas_w / 2`). Top holds
+/// the 5h progress ring with the "RESTA" label + big remaining-% glyph.
+/// Below: primary caption line, weekly usage bar, weekly caption line.
 struct BubbleLayout {
     canvas_w: i32,
     canvas_h: i32,
     corner_radius: i32,
-    head_diameter: i32,
     ring_cx: f32,
     ring_cy: f32,
     ring_radius: f32,
     ring_stroke_w: f32,
     time_ring_radius: f32,
     time_ring_stroke_w: f32,
-    head_label_rect: RECT,
-    head_pct_rect: RECT,
-    tail_usage_pct_rect: RECT,
-    tail_usage_bar_rect: RECT,
-    tail_time_text_rect: RECT,
-    tail_time_bar_rect: RECT,
+    resta_label_rect: RECT,
+    pct_rect: RECT,
+    countdown_rect: RECT,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
@@ -1279,117 +1445,72 @@ struct BubbleLayout {
 fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayout {
     let width_px = scale_to_dpi(size_logical, dpi);
     let height_px = scale_to_dpi(bubble_height_logical(size_logical), dpi);
-    let head_diameter = height_px;
+    let pad = (width_px * 6 / 100).max(1);
+    let ring_d = width_px - 2 * pad;
 
-    let head_pad = scale_to_dpi(5, dpi);
-    let ring_stroke_w = scale_to_dpi(3, dpi).clamp(2, 4) as f32;
-    let ring_cx = (head_diameter as f32) / 2.0;
-    let ring_cy = (height_px as f32) / 2.0;
+    let ring_stroke_w = ((ring_d * 6 / 100).max(1)) as f32;
+    let ring_cx = (width_px as f32) / 2.0;
+    let ring_cy = (pad + ring_d / 2) as f32;
     // Ring centerline: midway between outer and inner edge, then keep stroke
-    // inside the head padding. ring_radius is the centerline radius.
-    let ring_outer = (head_diameter as f32) / 2.0 - (head_pad as f32);
-    let ring_radius = ring_outer - ring_stroke_w / 2.0;
+    // inside the padding. ring_radius is the centerline radius.
+    let ring_outer = (ring_d as f32) / 2.0 - ring_stroke_w / 2.0 - 1.0;
+    let ring_radius = (ring_outer - ring_stroke_w / 2.0).max(1.0);
     // Inner ring renders the remaining-time arc. Floor stroke at 2 logical so
     // it stays visible at smaller bubble sizes (clamp 1 produced a hairline
     // that disappeared into the track on dark themes).
-    let time_ring_stroke_w = scale_to_dpi(2, dpi).clamp(2, 3) as f32;
+    let time_ring_stroke_w = (ring_stroke_w * 0.55).max(1.0);
+    let time_gap = ((ring_d * 3 / 100) as f32).max(1.0);
     let time_ring_radius =
-        (ring_radius - ring_stroke_w - scale_to_dpi(4, dpi) as f32).max(time_ring_stroke_w);
+        (ring_radius - ring_stroke_w - time_gap).max(time_ring_stroke_w);
 
-    let big_font_px = (head_diameter * 24 / 100).max(scale_to_dpi(11, dpi));
-    let small_font_px = ((big_font_px * 55) / 100).max(scale_to_dpi(9, dpi));
+    let big_font_px = (ring_d * 24 / 100).max(4);
+    let small_font_px = ((big_font_px * 40) / 100).max(3);
     let main_font_px = small_font_px;
 
-    let head_label_h = small_font_px + scale_to_dpi(2, dpi);
-    let head_pct_h = big_font_px + scale_to_dpi(2, dpi);
-    let label_pct_gap = (big_font_px * 15 / 100).max(scale_to_dpi(2, dpi));
-    let head_total_h = head_label_h + label_pct_gap + head_pct_h;
-    let head_text_top = (height_px - head_total_h) / 2;
-    let head_label_rect = RECT {
-        left: scale_to_dpi(4, dpi),
-        top: head_text_top,
-        right: head_diameter - scale_to_dpi(4, dpi),
-        bottom: head_text_top + head_label_h,
+    // Ring texts, vertically centered inside the ring.
+    let label_h = small_font_px + scale_to_dpi(2, dpi);
+    let pct_h = big_font_px + scale_to_dpi(2, dpi);
+    let label_pct_gap = (big_font_px * 12 / 100).max(1);
+    let ring_text_h = label_h + label_pct_gap + pct_h;
+    let ring_text_top = pad + (ring_d - ring_text_h) / 2;
+    let resta_label_rect = RECT {
+        left: pad,
+        top: ring_text_top,
+        right: width_px - pad,
+        bottom: ring_text_top + label_h,
     };
-    let head_pct_rect = RECT {
-        left: scale_to_dpi(4, dpi),
-        top: head_text_top + head_label_h + label_pct_gap,
-        right: head_diameter - scale_to_dpi(4, dpi),
-        bottom: head_text_top + head_total_h,
+    let pct_rect = RECT {
+        left: pad,
+        top: ring_text_top + label_h + label_pct_gap,
+        right: width_px - pad,
+        bottom: ring_text_top + ring_text_h,
     };
 
-    let tail_left = head_diameter;
-    let tail_right = width_px - scale_to_dpi(14, dpi);
-    let pad = scale_to_dpi(6, dpi);
-    // Breathing room between bar end and the right-aligned text. 6 logical
-    // had the bar visually colliding with "100%" / countdown glyphs.
-    let bar_text_gap = scale_to_dpi(8, dpi);
-
-    let countdown_w = measure_text_w(mem_dc, COUNTDOWN_TEMPLATE, main_font_px);
-    let pct_reserve_w = measure_text_w(mem_dc, "100%", small_font_px) + scale_to_dpi(2, dpi);
-
-    // Usage bar carries the primary signal; make it ~2.5x the mass of the
-    // time bar so the two lanes don't read as two competing quotas.
-    let usage_bar_h = (height_px * 10 / 100).clamp(scale_to_dpi(6, dpi), scale_to_dpi(12, dpi));
-    let time_bar_h = (height_px * 4 / 100).clamp(scale_to_dpi(3, dpi), scale_to_dpi(6, dpi));
-    let lane_gap = scale_to_dpi(6, dpi);
-    let lanes_h = usage_bar_h + lane_gap + time_bar_h;
-    let usage_bar_top = (height_px - lanes_h) / 2;
-    let time_bar_top = usage_bar_top + usage_bar_h + lane_gap;
-    let time_text_h = main_font_px + scale_to_dpi(2, dpi);
-    let usage_pct_h = small_font_px + scale_to_dpi(2, dpi);
-
-    let content_left = tail_left + pad;
-    let content_right = tail_right;
-    let content_w = (content_right - content_left).max(0);
-    let bar_min = scale_to_dpi(8, dpi);
-    let desired_text_w = countdown_w.max(pct_reserve_w);
-    let text_w = if content_w >= desired_text_w + bar_text_gap + bar_min {
-        desired_text_w
-    } else {
-        (content_w - bar_text_gap - bar_min).max(0)
+    // Single countdown caption below the ring (nothing else).
+    let cap_h = main_font_px + scale_to_dpi(2, dpi);
+    let ring_gap = (ring_d * 8 / 100).max(2);
+    let y = pad + ring_d + ring_gap;
+    let countdown_rect = RECT {
+        left: pad,
+        top: y,
+        right: width_px - pad,
+        bottom: y + cap_h,
     };
-    let text_left = content_right - text_w;
-    let bar_left = content_left;
-    let bar_right = (text_left - bar_text_gap).max(bar_left + bar_min);
+    let _ = mem_dc;
 
     BubbleLayout {
         canvas_w: width_px,
         canvas_h: height_px,
-        corner_radius: height_px / 2,
-        head_diameter,
+        corner_radius: width_px / 2,
         ring_cx,
         ring_cy,
         ring_radius,
         ring_stroke_w,
         time_ring_radius,
         time_ring_stroke_w,
-        head_label_rect,
-        head_pct_rect,
-        tail_usage_pct_rect: RECT {
-            left: text_left,
-            top: usage_bar_top + (usage_bar_h - usage_pct_h) / 2,
-            right: content_right,
-            bottom: usage_bar_top + (usage_bar_h - usage_pct_h) / 2 + usage_pct_h,
-        },
-        tail_usage_bar_rect: RECT {
-            left: bar_left,
-            top: usage_bar_top,
-            right: bar_right,
-            bottom: usage_bar_top + usage_bar_h,
-        },
-        tail_time_text_rect: RECT {
-            left: text_left,
-            top: time_bar_top + (time_bar_h - time_text_h) / 2,
-            right: content_right,
-            bottom: time_bar_top + (time_bar_h - time_text_h) / 2 + time_text_h,
-        },
-        tail_time_bar_rect: RECT {
-            left: bar_left,
-            top: time_bar_top,
-            right: bar_right,
-            bottom: time_bar_top + time_bar_h,
-        },
+        resta_label_rect,
+        pct_rect,
+        countdown_rect,
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1431,18 +1552,18 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         let mut paint = Paint::default();
         paint.set_color(rgb_to_skia(bg));
         paint.anti_alias = true;
-        let r = (layout.canvas_h as f32) / 2.0;
+        let r = layout.corner_radius as f32;
         let w = layout.canvas_w as f32;
         let h = layout.canvas_h as f32;
 
         // Two end-cap circles + middle rect. Overlap is fine — same color.
         let mut pb = PathBuilder::new();
         pb.push_circle(r, r, r);
-        pb.push_circle(w - r, r, r);
+        pb.push_circle(r, h - r, r);
         if let Some(p) = pb.finish() {
             pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
         }
-        if let Some(rect) = Rect::from_xywh(r, 0.0, (w - 2.0 * r).max(0.0), h) {
+        if let Some(rect) = Rect::from_xywh(0.0, r, w, (h - 2.0 * r).max(0.0)) {
             pixmap.fill_rect(rect, &paint, Transform::identity(), None);
         }
     }
@@ -1461,9 +1582,10 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
             pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
         }
 
-        // Active sweep arc.
+        // Active sweep arc. Fork: fuel-gauge — the ring shows what REMAINS
+        // (100 - used). Colors/thresholds below still use `pct` (used).
         if let Some(pct) = inputs.session_pct {
-            let sweep = (pct.clamp(0.0, 100.0) / 100.0) as f32;
+            let sweep = ((100.0 - pct).clamp(0.0, 100.0) / 100.0) as f32;
             if sweep > 0.0 {
                 let mut color =
                     crate::usage_color::bar_fill_color(inputs.model, inputs.is_dark, pct);
@@ -1520,56 +1642,6 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         }
     }
 
-    // ---- Tail usage bar + reset-time bar ----
-    {
-        let bar_x = layout.tail_usage_bar_rect.left as f32;
-        let bar_y = layout.tail_usage_bar_rect.top as f32;
-        let bar_w = (layout.tail_usage_bar_rect.right - layout.tail_usage_bar_rect.left) as f32;
-        let bar_h = (layout.tail_usage_bar_rect.bottom - layout.tail_usage_bar_rect.top) as f32;
-        let cap = bar_h * 0.5;
-        if bar_w > 0.0 && bar_h > 0.0 {
-            paint_pill(&mut pixmap, bar_x, bar_y, bar_w, bar_h, cap, track);
-            if let Some(pct) = inputs.weekly_pct {
-                let frac = (pct.clamp(0.0, 100.0) / 100.0) as f32;
-                let fill_w = bar_w * frac;
-                if fill_w > 0.0 {
-                    let mut color =
-                        crate::usage_color::bar_fill_color(inputs.model, inputs.is_dark, pct);
-                    if pct >= 95.0 {
-                        let t = pulse_triangle(inputs.pulse_phase);
-                        color = brighten(color, t);
-                    }
-                    // Floor at one cap-diameter so a 1% reading still renders
-                    // as a recognizable dot rather than a sub-pixel sliver.
-                    let mut clipped_w = fill_w.min(bar_w);
-                    if clipped_w < bar_h {
-                        clipped_w = bar_h.min(bar_w);
-                    }
-                    paint_pill(&mut pixmap, bar_x, bar_y, clipped_w, bar_h, cap, color);
-                }
-            }
-        }
-
-        let bar_x = layout.tail_time_bar_rect.left as f32;
-        let bar_y = layout.tail_time_bar_rect.top as f32;
-        let bar_w = (layout.tail_time_bar_rect.right - layout.tail_time_bar_rect.left) as f32;
-        let bar_h = (layout.tail_time_bar_rect.bottom - layout.tail_time_bar_rect.top) as f32;
-        let cap = bar_h * 0.5;
-        if bar_w > 0.0 && bar_h > 0.0 {
-            paint_pill(&mut pixmap, bar_x, bar_y, bar_w, bar_h, cap, time_track);
-            if let Some(frac) = remaining_fraction(
-                inputs.weekly_resets_at,
-                window_duration_secs(inputs.model, UsageWindowKind::Secondary),
-            ) {
-                let fill_w = (bar_w * frac).min(bar_w);
-                if fill_w > 0.0 {
-                    // Anchor on the right edge so the bar shrinks toward the right as time passes.
-                    let fill_x = bar_x + bar_w - fill_w;
-                    paint_pill(&mut pixmap, fill_x, bar_y, fill_w, bar_h, cap, time_fill);
-                }
-            }
-        }
-    }
 
     Some(pixmap)
 }
@@ -1851,106 +1923,56 @@ fn brighten(c: Color, t: f64) -> Color {
     )
 }
 
-/// Paint the bubble's text overlay via GDI: primary countdown + big "%"
-/// glyph in the head, weekly percent + weekly countdown on the tail.
+/// Fork (Rafael): vertical minimalist texts — "RESTA" + big remaining-% in
+/// the ring, centered primary caption below it, weekly caption at the bottom.
 fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
     let text_color = if inputs.is_dark {
         Color::from_hex("#EAEAEA")
     } else {
         Color::from_hex("#1F1F1F")
     };
-    let muted_color = if inputs.is_dark {
-        Color::from_hex("#A8A8A8")
-    } else {
-        Color::from_hex("#5E5E5E")
-    };
 
     let font_name = wide_str("Segoe UI");
     unsafe {
-        // Big head percent uses FW_BOLD to anchor the eye against the ring.
-        // small_font is semibold because it carries both the "5H" window tag
-        // and the tail weekly-percent — both want a touch more weight than
-        // the countdown text rendered with main_font.
+        // Big remaining-% uses FW_BOLD to anchor the eye against the ring.
         let big_font = create_font(layout.big_font_px, &font_name, FW_BOLD.0 as i32);
         let small_font = create_font(layout.small_font_px, &font_name, FW_SEMIBOLD.0 as i32);
-        let main_font = create_font(layout.main_font_px, &font_name, FW_NORMAL.0 as i32);
         SetBkMode(hdc, TRANSPARENT);
 
         let prev_font = SelectObject(hdc, small_font);
 
-        // Head: 5h countdown text if available, otherwise the static "5h" tag.
-        // The ring already signals "this is the 5h window", so the countdown
-        // is the more useful glanceable info when we have it. Fall back to
-        // "5h" when the countdown would overflow the rect at the
-        // 140-logical minimum width —
-        // DT_NOCLIP would otherwise leak the glyphs onto the ring stroke.
-        SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
-        let head_label_rect_w = layout.head_label_rect.right - layout.head_label_rect.left;
-        let head_label_text: &str = if inputs.session_text.is_empty() {
-            "5H"
-        } else if measure_text_w(hdc, &inputs.session_text, layout.small_font_px)
-            <= head_label_rect_w
-        {
-            inputs.session_text.as_str()
-        } else {
-            "5H"
-        };
-        draw_text_in_rect(hdc, &layout.head_label_rect, head_label_text, DT_CENTER);
+        // "RESTA": full-contrast so it stays readable at tiny sizes.
+        SetTextColor(hdc, COLORREF(text_color.into_colorref()));
+        draw_text_in_rect(hdc, &layout.resta_label_rect, "RESTA", DT_CENTER);
 
-        // Head: big "X%" glyph centered.
+        // Big remaining-% glyph centered in the ring.
         SelectObject(hdc, big_font);
         SetTextColor(hdc, COLORREF(text_color.into_colorref()));
         let pct_text = match inputs.session_pct {
-            Some(p) => format!("{:.0}%", p),
+            Some(p) => format!("{:.0}%", (100.0 - p).clamp(0.0, 100.0)),
             None => String::from("—"),
         };
-        draw_text_in_rect(hdc, &layout.head_pct_rect, &pct_text, DT_CENTER);
+        draw_text_in_rect(hdc, &layout.pct_rect, &pct_text, DT_CENTER);
 
-        // Tail: weekly percent (foreground color, right of its usage bar). Skipped
-        // when the layout collapsed the rect at small widths. Foreground —
-        // not the accent color the bar uses — because Codex teal #10A37F on
-        // the light theme background only hits ~3.2:1 contrast, below WCAG
-        // AA for small text. Adjacency to the bar carries the visual
-        // grouping; we don't need hue to do it too.
-        SelectObject(hdc, small_font);
-        if let Some(pct) = inputs.weekly_pct {
-            if layout.tail_usage_pct_rect.right > layout.tail_usage_pct_rect.left {
-                let mut color = text_color;
-                if pct >= 95.0 {
-                    let t = pulse_triangle(inputs.pulse_phase);
-                    color = brighten(color, t);
-                }
-                SetTextColor(hdc, COLORREF(color.into_colorref()));
-                let weekly_pct_text = format!("{:.0}%", pct);
-                draw_tail_text_in_rect(
-                    hdc,
-                    &layout.tail_usage_pct_rect,
-                    &weekly_pct_text,
-                    DT_RIGHT,
-                );
-            }
-        }
-
-        // Tail: weekly countdown aligned with its true remaining-time bar.
-        // Muted color — the percent above is the headline; the countdown is
-        // supporting context and should not compete for visual weight.
-        SelectObject(hdc, main_font);
-        SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
-        if !inputs.weekly_text.is_empty() {
-            draw_tail_text_in_rect(
-                hdc,
-                &layout.tail_time_text_rect,
-                &inputs.weekly_text,
-                DT_RIGHT,
-            );
-        }
+        // Single countdown caption: precise time left, BOLD, pure
+        // black-on-light / white-on-dark for maximum legibility.
+        let count_color = if inputs.is_dark {
+            Color::from_hex("#FFFFFF")
+        } else {
+            Color::from_hex("#000000")
+        };
+        let count_font = create_font(layout.main_font_px, &font_name, FW_BOLD.0 as i32);
+        SelectObject(hdc, count_font);
+        SetTextColor(hdc, COLORREF(count_color.into_colorref()));
+        draw_text_in_rect(hdc, &layout.countdown_rect, &inputs.session_text, DT_CENTER);
 
         SelectObject(hdc, prev_font);
         let _ = DeleteObject(big_font);
         let _ = DeleteObject(small_font);
-        let _ = DeleteObject(main_font);
+        let _ = DeleteObject(count_font);
     }
 }
+
 
 /// Draw `text` into `rect` with the given horizontal alignment flag, vertically
 /// centered. The DT_NOCLIP flag preserves ascenders/descenders that would

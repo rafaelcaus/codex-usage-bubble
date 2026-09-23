@@ -37,6 +37,9 @@ fn default_show_opencode_go() -> bool {
 fn default_widget_visible() -> bool {
     true
 }
+fn default_only_over_chatgpt() -> bool {
+    true
+}
 fn default_bubble_size() -> i32 {
     DEFAULT_BUBBLE_SIZE
 }
@@ -44,7 +47,9 @@ fn default_poll_interval_ms() -> u32 {
     POLL_5_MIN
 }
 fn default_update_check_interval_secs() -> Option<u64> {
-    Some(UPDATE_CHECK_HOURLY_SECS)
+    // Fork: Daily. The feed points at our own repo, so auto-update only
+    // ever installs our own fork releases (safe to leave on).
+    Some(UPDATE_CHECK_DAILY_SECS)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -144,6 +149,10 @@ pub struct Settings {
     pub update_check_interval_secs: Option<u64>,
     #[serde(default = "default_widget_visible")]
     pub widget_visible: bool,
+    /// Fork (Rafael): when true, bubbles auto-hide unless the ChatGPT/Codex
+    /// desktop app (or our own UI) owns the foreground window.
+    #[serde(default = "default_only_over_chatgpt")]
+    pub only_over_chatgpt: bool,
 }
 
 impl Default for Settings {
@@ -158,6 +167,7 @@ impl Default for Settings {
             last_update_check_unix: None,
             update_check_interval_secs: default_update_check_interval_secs(),
             widget_visible: default_widget_visible(),
+            only_over_chatgpt: default_only_over_chatgpt(),
         }
     }
 }

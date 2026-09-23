@@ -3,6 +3,10 @@
 
 # Claude Code Usage Bubble
 
+> **Fork pessoal (Codex plano Pro, cota semanal)** — ver [FORK.md](FORK.md)
+> para a lista de mudancas. Upstream:
+> https://github.com/tiennm99/claude-code-usage-bubble (Apache-2.0).
+
 A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.

@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 // Original infrastructure.
+mod codex_tokens;
 mod creds;
 mod diag;
 mod i18n;
