@@ -202,8 +202,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> Option<i64> {
 }
 
 /// Format like 1234567 → "1.234.567" (pt-BR thousands separator).
-pub fn format_tokens(n: u64) -> String {
-    let s = n.to_string();
+pub fn format_tokens(n: u64) -> String {    let s = n.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
     for (i, c) in s.chars().enumerate() {
         if i > 0 && (s.len() - i) % 3 == 0 {
@@ -212,6 +211,18 @@ pub fn format_tokens(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// Compact form for tiny surfaces: 55300000 -> "55,3M", 12400 -> "12,4K".
+pub fn format_compact(n: i64) -> String {
+    let n = n.max(0);
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0).replace('.', ",")
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0).replace('.', ",")
+    } else {
+        n.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -246,6 +257,9 @@ mod tests {
         assert_eq!(format_tokens(97), "97");
         assert_eq!(format_tokens(17208), "17.208");
         assert_eq!(format_tokens(1234567), "1.234.567");
+        assert_eq!(format_compact(55300000), "55,3M");
+        assert_eq!(format_compact(12400), "12,4K");
+        assert_eq!(format_compact(999), "999");
     }
 
     #[test]

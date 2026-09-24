@@ -18,7 +18,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
-use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
+use tiny_skia::{
+    FillRule, GradientStop, LineCap, LinearGradient, Paint, PathBuilder, Pixmap, Point, Rect,
+    SpreadMode, Stroke, Transform,
+};
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::{
@@ -81,6 +84,7 @@ pub struct BubbleConfig {
     pub weekly_pct: Option<f64>,
     pub weekly_text: String,
     pub weekly_resets_at: Option<SystemTime>,
+    pub today_text: String,
     pub is_dark: bool,
 }
 
@@ -98,7 +102,8 @@ fn bubble_content_height_logical(width_logical: i32) -> i32 {
     let small = ((big * 40) / 100).max(3);
     let cap = small + 5;
     let g1 = (ring * 8 / 100).max(2);
-    pad + ring + g1 + cap + pad + 2
+    let today_h = small + 2;
+    pad + ring + g1 + cap + 4 + today_h + pad + 2
 }
 
 #[derive(Clone, Copy)]
@@ -254,6 +259,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             weekly_pct: config.weekly_pct,
             weekly_text: config.weekly_text,
             weekly_resets_at: config.weekly_resets_at,
+            today_text: config.today_text,
             is_dark: config.is_dark,
             drag_start_pos: None,
             hidden_by_fullscreen: false,
@@ -330,6 +336,7 @@ pub fn update_data(
     weekly_pct: Option<f64>,
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
+    today_text: String,
 ) {
     {
         let mut bubbles = lock_bubbles();
@@ -342,6 +349,7 @@ pub fn update_data(
         b.weekly_pct = weekly_pct;
         b.weekly_text = weekly_text;
         b.weekly_resets_at = weekly_resets_at;
+        b.today_text = today_text;
     }
     sync_pulse_timer(hwnd);
     sync_time_progress_timer(hwnd);
@@ -469,6 +477,7 @@ struct BubbleState {
     weekly_pct: Option<f64>,
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
+    today_text: String,
     is_dark: bool,
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
@@ -1453,6 +1462,7 @@ struct BubbleLayout {
     resta_label_rect: RECT,
     pct_rect: RECT,
     countdown_rect: RECT,
+    today_rect: RECT,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
@@ -1516,6 +1526,16 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         right: ox + width_px - pad,
         bottom: y + cap_h,
     };
+    // "HOJE 55,3M" micro-line under the countdown.
+    let today_gap = scale_to_dpi(4, dpi);
+    let today_h = main_font_px + scale_to_dpi(2, dpi);
+    let today_y = y + cap_h + today_gap;
+    let today_rect = RECT {
+        left: ox + pad,
+        top: today_y,
+        right: ox + width_px - pad,
+        bottom: today_y + today_h,
+    };
     let _ = mem_dc;
 
     BubbleLayout {
@@ -1532,6 +1552,7 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         resta_label_rect,
         pct_rect,
         countdown_rect,
+        today_rect,
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1612,16 +1633,9 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
     let mut pixmap = Pixmap::new(layout.canvas_w as u32, layout.canvas_h as u32)?;
     pixmap.fill(tiny_skia::Color::TRANSPARENT);
 
-    let bg = if inputs.is_dark {
-        Color::from_hex("#1F1F1F")
-    } else {
-        Color::from_hex("#F3F3F3")
-    };
-    let track = if inputs.is_dark {
-        Color::from_hex("#2C2C2C")
-    } else {
-        Color::from_hex("#E2E2E2")
-    };
+    // Fork: fixed deep-navy card (dashboard look) in both OS themes.
+    let bg = Color::from_hex("#1B1B30");
+    let track = Color::from_hex("#33334D");
     // Inner-ring / time-bar neutral track. Lifted off the background to
     // clear WCAG 1.4.11 3:1 on dark themes (#303030 on #1F1F1F was ~1.13:1).
     let time_track = if inputs.is_dark {
@@ -1674,17 +1688,30 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
 
         // Active sweep arc. Fork: fuel-gauge — the ring shows what REMAINS
         // (100 - used). Colors/thresholds below still use `pct` (used).
-        if let Some(pct) = inputs.session_pct {
+        if inputs.session_pct.is_some() {
+            let pct = inputs.session_pct.unwrap_or(0.0);
             let sweep = ((100.0 - pct).clamp(0.0, 100.0) / 100.0) as f32;
             if sweep > 0.0 {
-                let mut color =
-                    crate::usage_color::bar_fill_color(inputs.model, inputs.is_dark, pct);
-                if pct >= 95.0 {
-                    let t = pulse_triangle(inputs.pulse_phase);
-                    color = brighten(color, t);
-                }
+                // Fork: signature teal->violet gradient sweep (dashboard
+                // look). Threshold hues stay on the panel/tray balloon.
                 let mut paint = Paint::default();
-                paint.set_color(rgb_to_skia(color));
+                let rr = layout.ring_radius;
+                let grad = LinearGradient::new(
+                    Point::from_xy(layout.ring_cx - rr, layout.ring_cy - rr),
+                    Point::from_xy(layout.ring_cx + rr, layout.ring_cy + rr),
+                    vec![
+                        GradientStop::new(0.0, tiny_skia::Color::from_rgba8(45, 212, 191, 255)),
+                        GradientStop::new(1.0, tiny_skia::Color::from_rgba8(139, 92, 246, 255)),
+                    ],
+                    SpreadMode::Pad,
+                    Transform::identity(),
+                );
+                match grad {
+                    Some(shader) => paint.shader = shader,
+                    None => paint.set_color(rgb_to_skia(
+                        crate::usage_color::accent_color_for(inputs.model, true),
+                    )),
+                }
                 paint.anti_alias = true;
                 let mut stroke = Stroke::default();
                 stroke.width = layout.ring_stroke_w;
@@ -1873,6 +1900,7 @@ struct PaintInputs {
     weekly_pct: Option<f64>,
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
+    today_text: String,
     is_dark: bool,
     pulse_phase: u32,
 }
@@ -1894,7 +1922,10 @@ fn render(hwnd: HWND) {
                 weekly_pct: b.weekly_pct,
                 weekly_text: b.weekly_text.clone(),
                 weekly_resets_at: b.weekly_resets_at,
-                is_dark: b.is_dark,
+                today_text: b.today_text.clone(),
+                // Fork: bubble card is always dark (dashboard look); the
+                // expanded panel keeps following the real OS theme.
+                is_dark: true,
                 pulse_phase: b.pulse_phase,
             },
         )
@@ -1911,6 +1942,19 @@ fn render(hwnd: HWND) {
             return;
         }
         let layout = compute_bubble_layout(size_logical, dpi, mem_dc);
+
+        static RENDER_LOGGED: AtomicBool = AtomicBool::new(false);
+        if !RENDER_LOGGED.swap(true, Ordering::Relaxed) {
+            log::info!(
+                "render probe: size_logical={} dpi={} canvas={}x{} session_text_len={} today_len={}",
+                size_logical,
+                dpi,
+                layout.canvas_w,
+                layout.canvas_h,
+                inputs.session_text.len(),
+                inputs.today_text.len(),
+            );
+        }
 
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -2021,6 +2065,11 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
     } else {
         Color::from_hex("#1F1F1F")
     };
+    let muted_color = if inputs.is_dark {
+        Color::from_hex("#A8A8A8")
+    } else {
+        Color::from_hex("#5E5E5E")
+    };
 
     let font_name = wide_str("Segoe UI");
     unsafe {
@@ -2068,6 +2117,19 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         SelectObject(hdc, count_font);
         SetTextColor(hdc, COLORREF(count_color.into_colorref()));
         draw_text_in_rect(hdc, &layout.countdown_rect, &inputs.session_text, DT_CENTER);
+
+        // "HOJE 55,3M" micro-line (account daily buckets; empty until the
+        // first app-server answer arrives).
+        if !inputs.today_text.is_empty() {
+            SelectObject(hdc, small_font);
+            SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
+            draw_text_in_rect(
+                hdc,
+                &layout.today_rect,
+                &format!("HOJE {}", inputs.today_text),
+                DT_CENTER,
+            );
+        }
 
         SelectObject(hdc, prev_font);
         let _ = DeleteObject(big_font);

@@ -143,6 +143,8 @@ struct ProviderUiState {
     pace_text: String,
     /// Fork: tokens since local midnight.
     tokens_today_text: String,
+    /// Fork: compact "55,3M" for the bubble micro-line (API value only).
+    today_micro: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -264,6 +266,9 @@ pub fn run(args: crate::AppArgs) {
     });
 
     create_initial_bubbles();
+    // Fork: account data worker (daily tokens via app-server). Independent
+    // thread with its own 60s loop; the UI only reads its last snapshot.
+    crate::appserver::start();
     // Fork (Rafael): push the persisted focus-follow flag into the bubble
     // module so the 0.35s foreground check enforces it from the first tick.
     bubble::set_only_over_chatgpt(
@@ -363,6 +368,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         weekly_pct: None,
         weekly_text: placeholder,
         weekly_resets_at: None,
+        today_text: String::new(),
         is_dark,
     });
     if hwnd != HWND::default() {
@@ -691,18 +697,35 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     };
 
-    // Tokens since local midnight (this PC).
-    entry.tokens_today_text = if id == ProviderId::ChatGpt {
-        match local_midnight().and_then(crate::codex_tokens::tokens_since_reset) {
-            Some(n) => format!(
-                "{}: {}",
-                strings.tokens_today_prefix,
+    // Tokens today: account API first (covers desktop app + CLI on this
+    // machine), local CLI sessions as fallback, dash when neither.
+    let api = crate::appserver::latest();
+    if id == ProviderId::ChatGpt {
+        if let Some(t) = api.tokens_today {
+            let n = (t.max(0) as u64).min(u64::MAX);
+            entry.tokens_today_text = format!(
+                "Tokens hoje: {}",
                 crate::codex_tokens::format_tokens(n)
-            ),
-            None => format!("{}: -", strings.tokens_today_prefix),
+            );
+            entry.today_micro = crate::codex_tokens::format_compact(t);
+        } else {
+            entry.today_micro.clear();
+            match local_midnight().and_then(crate::codex_tokens::tokens_since_reset) {
+                Some(n) if n > 0 => {
+                    entry.tokens_today_text = format!(
+                        "Tokens hoje (so CLI neste PC): {}",
+                        crate::codex_tokens::format_tokens(n)
+                    )
+                }
+                _ => {
+                    entry.tokens_today_text =
+                        format!("{}: -", strings.tokens_today_prefix)
+                }
+            }
         }
     } else {
-        format!("{}: -", strings.tokens_today_prefix)
+        entry.today_micro.clear();
+        entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
 }
 
@@ -778,12 +801,13 @@ fn propagate_to_ui() {
         );
         if let Some(e) = entry {
             log::info!(
-                "detail data: reset='{}' budget='{}' pace='{}' tokens='{}' today='{}'",
+                "detail data: reset='{}' budget='{}' pace='{}' tokens='{}' today='{}' micro='{}'",
                 e.reset_text,
                 e.budget_text,
                 e.pace_text,
                 e.tokens_text,
-                e.tokens_today_text
+                e.tokens_today_text,
+                e.today_micro
             );
         }
         bubble::update_data(
@@ -794,6 +818,9 @@ fn propagate_to_ui() {
             weekly_pct,
             weekly_text,
             weekly_resets_at,
+            entry
+                .map(|s| s.today_micro.clone())
+                .unwrap_or_default(),
         );
     }
     refresh_tray_icons_with(&snap);

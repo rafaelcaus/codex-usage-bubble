@@ -61,6 +61,17 @@ impl UsageProvider for ChatGptProvider {
         let body: Envelope = resp
             .json()
             .map_err(|e| Error::BadResponse(format!("JSON parse: {e}")))?;
+        // Fork discovery: log top-level field NAMES only (never values —
+        // values may contain account data). Shows whether token buckets
+        // ride along in this response.
+        let mut extra_keys: Vec<&str> = body.extra.keys().map(String::as_str).collect();
+        extra_keys.sort_unstable();
+        log::info!("wham/usage extra top-level keys: {extra_keys:?}");
+        for probe in ["model_usage", "credits", "additional_rate_limits"] {
+            if let Some(v) = body.extra.get(probe) {
+                log::info!("wham/usage shape {probe}: {}", shape_of(v, 0));
+            }
+        }
         envelope_to_windows(body)
             .ok_or_else(|| Error::BadResponse("missing rate_limit section".into()))
     }
@@ -97,9 +108,45 @@ fn unix_to_systemtime(secs: Option<i64>) -> Option<SystemTime> {
     Some(UNIX_EPOCH + Duration::from_secs(s as u64))
 }
 
+/// Fork discovery helper: describe a JSON value's SHAPE (key names and
+/// scalar types) without revealing any values. Depth-capped; arrays show
+/// their first element's shape only.
+fn shape_of(v: &serde_json::Value, depth: usize) -> String {
+    if depth > 3 {
+        return "…".into();
+    }
+    match v {
+        serde_json::Value::Null => "null".into(),
+        serde_json::Value::Bool(_) => "bool".into(),
+        serde_json::Value::Number(_) => "num".into(),
+        serde_json::Value::String(_) => "str".into(),
+        serde_json::Value::Array(items) => {
+            let first = items
+                .first()
+                .map(|x| shape_of(x, depth + 1))
+                .unwrap_or_default();
+            format!("[{}; len={}]", first, items.len())
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let parts: Vec<String> = keys
+                .iter()
+                .take(25)
+                .map(|k| format!("{k}:{}", shape_of(&map[*k], depth + 1)))
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct Envelope {
     rate_limit: Option<Option<Box<RateLimit>>>,
+    /// Fork: capture-but-ignore everything else so we can discover new
+    /// fields (e.g. daily token buckets) by logging KEYS only, never values.
+    #[serde(flatten, default)]
+    extra: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]

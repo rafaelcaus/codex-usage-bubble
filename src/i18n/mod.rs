@@ -141,7 +141,7 @@ fn english_strings() -> LocaleStrings {
         tokens_prefix: "Tokens neste PC desde o reset".into(),
         budget_prefix: "Orçamento diário".into(),
         pace_prefix: "Ritmo".into(),
-        tokens_today_prefix: "Tokens hoje neste PC".into(),
+        tokens_today_prefix: "Tokens hoje".into(),
         session_window: "5h".into(),
         weekly_window: "7d".into(),
         now: "now".into(),
