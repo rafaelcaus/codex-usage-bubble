@@ -1,6 +1,6 @@
 [package]
 name = "claude-code-usage-bubble"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Floating bubble showing Claude Code and Codex usage on Windows"
@@ -11,6 +11,7 @@ repository = "https://github.com/tiennm99/claude-code-usage-bubble"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
+chrono = "0.4"
 log = "0.4"
 simplelog = "0.12"
 thiserror = "2"

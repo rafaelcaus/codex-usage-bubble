@@ -11,6 +11,7 @@ mod diag;
 mod i18n;
 mod net;
 mod os;
+mod samples;
 mod tray;
 mod update;
 mod usage;

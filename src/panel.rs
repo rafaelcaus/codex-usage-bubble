@@ -24,7 +24,7 @@ const CLASS_NAME: &str = "ClaudeCodeUsageBubblePanel";
 // Fork (Rafael): widened + taller — weekly bar row plus "reset" and "tokens"
 // detail lines (5h row removed: Pro plan = weekly credits only).
 const PANEL_W_LOGICAL: i32 = 380;
-const PANEL_H_LOGICAL: i32 = 150;
+const PANEL_H_LOGICAL: i32 = 186;
 const PADDING_LOGICAL: i32 = 14;
 const ROW_GAP_LOGICAL: i32 = 8;
 const LABEL_W_LOGICAL: i32 = 28;
@@ -39,6 +39,9 @@ pub struct PanelData {
     pub weekly_text: String,
     pub reset_text: String,
     pub tokens_text: String,
+    pub budget_text: String,
+    pub pace_text: String,
+    pub tokens_today_text: String,
     pub is_dark: bool,
     pub strings: LocaleStrings,
 }
@@ -340,8 +343,9 @@ fn paint(hwnd: HWND, hdc: HDC) {
             rc.right - bar_x - scaled(PADDING_LOGICAL) - scaled(RIGHT_TEXT_W_LOGICAL) - scaled(4);
         let row1_y = scaled(PADDING_LOGICAL) + scaled(24);
 
-        // Fork: weekly-only (Pro plan). Single usage row, then the precise
-        // reset countdown and the local-sessions token count.
+        // Fork: weekly-only (Pro plan). Single usage row, then the detail
+        // lines: precise reset, daily budget, burn-rate pace, tokens since
+        // reset, tokens today. All from the PRIMARY (= weekly quota) window.
         draw_row(
             hdc,
             &data.strings.weekly_window,
@@ -358,31 +362,29 @@ fn paint(hwnd: HWND, hdc: HDC) {
             dpi,
         );
 
-        let line1_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(12);
-        let line2_y = line1_y + scaled(22);
         let text_w = rc.right - 2 * scaled(PADDING_LOGICAL);
-        draw_text(
-            hdc,
+        let mut line_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(12);
+        let line_step = scaled(22);
+        for line in [
             &data.reset_text,
-            text_color,
-            scaled(PADDING_LOGICAL),
-            line1_y,
-            text_w,
-            scaled(18),
-            false,
-            dpi,
-        );
-        draw_text(
-            hdc,
+            &data.budget_text,
+            &data.pace_text,
             &data.tokens_text,
-            text_color,
-            scaled(PADDING_LOGICAL),
-            line2_y,
-            text_w,
-            scaled(18),
-            false,
-            dpi,
-        );
+            &data.tokens_today_text,
+        ] {
+            draw_text(
+                hdc,
+                line,
+                text_color,
+                scaled(PADDING_LOGICAL),
+                line_y,
+                text_w,
+                scaled(18),
+                false,
+                dpi,
+            );
+            line_y += line_step;
+        }
     }
 }
 
@@ -524,6 +526,9 @@ fn clone_data() -> Option<PanelData> {
         weekly_text: p.data.weekly_text.clone(),
         reset_text: p.data.reset_text.clone(),
         tokens_text: p.data.tokens_text.clone(),
+        budget_text: p.data.budget_text.clone(),
+        pace_text: p.data.pace_text.clone(),
+        tokens_today_text: p.data.tokens_today_text.clone(),
         is_dark: p.data.is_dark,
         strings: p.data.strings.clone(),
     })

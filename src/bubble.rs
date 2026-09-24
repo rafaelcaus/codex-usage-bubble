@@ -62,6 +62,9 @@ const CORNER_SNAP_ZONE_LOGICAL: i32 = 32;
 const CORNER_INSET_LOGICAL: i32 = 12;
 const TASKBAR_GAP_LOGICAL: i32 = 4;
 const PEER_ALIGN_TOLERANCE_LOGICAL: i32 = 8;
+// Fork: soft drop shadow around the card so it lifts off light backgrounds.
+const SHADOW_MARGIN_LOGICAL: i32 = 12;
+const SHADOW_PEAK_ALPHA: f32 = 72.0;
 const CLASS_NAME: &str = "ClaudeCodeUsageBubble";
 const FULLSCREEN_POLL_MS: u32 = 350;
 const FULLSCREEN_EDGE_TOLERANCE_PX: i32 = 2;
@@ -85,6 +88,10 @@ pub struct BubbleConfig {
 /// Height is computed from the exact same content math as the layout below
 /// (in logical units), so the window always fits its content at any DPI.
 fn bubble_height_logical(width_logical: i32) -> i32 {
+    bubble_content_height_logical(width_logical) + 2 * SHADOW_MARGIN_LOGICAL
+}
+
+fn bubble_content_height_logical(width_logical: i32) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
@@ -178,7 +185,8 @@ pub fn create(config: BubbleConfig) -> HWND {
     register_class();
     let initial_size_logical = config.size_logical.clamp(MIN_BUBBLE_SIZE, MAX_BUBBLE_SIZE);
     let dpi_for_create = crate::os::dpi::for_system();
-    let width_px = scale_to_dpi(initial_size_logical, dpi_for_create);
+    let width_px = scale_to_dpi(initial_size_logical, dpi_for_create)
+        + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi_for_create);
     let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical), dpi_for_create);
     let (x, y) = config
         .position
@@ -632,22 +640,25 @@ fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     }
     let w = r.right - r.left;
     let h = r.bottom - r.top;
-    let radius = corner_radius_px(w, h);
-    // Local coordinates relative to top-left of the bubble.
-    let lx = pt.x - r.left;
-    let ly = pt.y - r.top;
-    if point_in_rounded_rect(lx, ly, w, h, radius) {
+    // Fork: the transparent shadow margin is click-through; test the card
+    // box inside it so clicks pass to windows underneath around the card.
+    let (m, radius) = lock_bubbles()
+        .get(&(hwnd.0 as isize))
+        .map(|b| {
+            (
+                scale_to_dpi(SHADOW_MARGIN_LOGICAL, b.dpi),
+                (scale_to_dpi(b.size_logical, b.dpi) * 10 / 100).max(1),
+            )
+        })
+        .unwrap_or((0, 8));
+    // Local coordinates relative to top-left of the card (inside margin).
+    let lx = pt.x - r.left - m;
+    let ly = pt.y - r.top - m;
+    if point_in_rounded_rect(lx, ly, w - 2 * m, h - 2 * m, radius) {
         LRESULT(HTCAPTION as isize)
     } else {
         LRESULT(HTTRANSPARENT as isize)
     }
-}
-
-fn corner_radius_px(w: i32, h: i32) -> i32 {
-    // Fork: match the painted shape (10% rounded card, not a full pill),
-    // so clicks/hit-testing agree with the visible outline. `h` unused.
-    let _ = h;
-    (w * 10 / 100).max(1)
 }
 
 fn point_in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
@@ -696,7 +707,8 @@ pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
         b.size_logical = new_logical;
         (new_logical, b.dpi)
     };
-    let width_px = scale_to_dpi(new_logical, dpi);
+    let width_px = scale_to_dpi(new_logical, dpi)
+        + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let height_px = scale_to_dpi(bubble_height_logical(new_logical), dpi);
     let mut r = RECT::default();
     unsafe {
@@ -1431,6 +1443,7 @@ struct BubbleLayout {
     canvas_w: i32,
     canvas_h: i32,
     corner_radius: i32,
+    shadow_margin: i32,
     ring_cx: f32,
     ring_cy: f32,
     ring_radius: f32,
@@ -1446,21 +1459,25 @@ struct BubbleLayout {
 }
 
 fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayout {
+    // Content box (the visible card). The canvas adds a shadow margin all
+    // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(bubble_height_logical(size_logical), dpi);
+    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical), dpi);
+    let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
+    let canvas_w = width_px + 2 * margin_px;
+    let canvas_h = height_px + 2 * margin_px;
+    let (ox, oy) = (margin_px, margin_px);
     let pad = (width_px * 6 / 100).max(1);
     let ring_d = width_px - 2 * pad;
 
     let ring_stroke_w = ((ring_d * 6 / 100).max(1)) as f32;
-    let ring_cx = (width_px as f32) / 2.0;
-    let ring_cy = (pad + ring_d / 2) as f32;
+    let ring_cx = (ox + width_px / 2) as f32;
+    let ring_cy = (oy + pad + ring_d / 2) as f32;
     // Ring centerline: midway between outer and inner edge, then keep stroke
     // inside the padding. ring_radius is the centerline radius.
     let ring_outer = (ring_d as f32) / 2.0 - ring_stroke_w / 2.0 - 1.0;
     let ring_radius = (ring_outer - ring_stroke_w / 2.0).max(1.0);
-    // Inner ring renders the remaining-time arc. Floor stroke at 2 logical so
-    // it stays visible at smaller bubble sizes (clamp 1 produced a hairline
-    // that disappeared into the track on dark themes).
+    // Inner ring renders the remaining-time arc, proportional to the ring.
     let time_ring_stroke_w = (ring_stroke_w * 0.55).max(1.0);
     let time_gap = ((ring_d * 3 / 100) as f32).max(1.0);
     let time_ring_radius =
@@ -1475,36 +1492,37 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
     let pct_h = big_font_px + scale_to_dpi(2, dpi);
     let label_pct_gap = (big_font_px * 12 / 100).max(1);
     let ring_text_h = label_h + label_pct_gap + pct_h;
-    let ring_text_top = pad + (ring_d - ring_text_h) / 2;
+    let ring_text_top = oy + pad + (ring_d - ring_text_h) / 2;
     let resta_label_rect = RECT {
-        left: pad,
+        left: ox + pad,
         top: ring_text_top,
-        right: width_px - pad,
+        right: ox + width_px - pad,
         bottom: ring_text_top + label_h,
     };
     let pct_rect = RECT {
-        left: pad,
+        left: ox + pad,
         top: ring_text_top + label_h + label_pct_gap,
-        right: width_px - pad,
+        right: ox + width_px - pad,
         bottom: ring_text_top + ring_text_h,
     };
 
     // Single countdown caption below the ring (nothing else).
     let cap_h = main_font_px + scale_to_dpi(5, dpi);
     let ring_gap = (ring_d * 8 / 100).max(2);
-    let y = pad + ring_d + ring_gap;
+    let y = oy + pad + ring_d + ring_gap;
     let countdown_rect = RECT {
-        left: pad,
+        left: ox + pad,
         top: y,
-        right: width_px - pad,
+        right: ox + width_px - pad,
         bottom: y + cap_h,
     };
     let _ = mem_dc;
 
     BubbleLayout {
-        canvas_w: width_px,
-        canvas_h: height_px,
+        canvas_w,
+        canvas_h,
         corner_radius: (width_px * 10 / 100).max(1),
+        shadow_margin: margin_px,
         ring_cx,
         ring_cy,
         ring_radius,
@@ -1519,6 +1537,73 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         main_font_px,
     }
 }
+
+
+/// Fill an axis-aligned rounded rect (correct for any radius, unlike the old
+/// two-circle stadium shortcut which only fits full pills).
+fn fill_rounded_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, color: Color) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let r = r.max(0.0).min(w / 2.0).min(h / 2.0);
+    let mut paint = Paint::default();
+    paint.set_color(rgb_to_skia(color));
+    paint.anti_alias = true;
+    let mut pb = PathBuilder::new();
+    pb.push_circle(x + r, y + r, r);
+    pb.push_circle(x + w - r, y + r, r);
+    pb.push_circle(x + r, y + h - r, r);
+    pb.push_circle(x + w - r, y + h - r, r);
+    if let Some(p) = pb.finish() {
+        pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+    if let Some(rect) = Rect::from_xywh(x, y + r, w, (h - 2.0 * r).max(0.0)) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+    if let Some(rect) = Rect::from_xywh(x + r, y, (w - 2.0 * r).max(0.0), h) {
+        pixmap.fill_rect(rect, &paint, Transform::identity(), None);
+    }
+}
+
+/// Soft drop shadow painted directly into the (premultiplied) pixmap BEFORE
+/// the card background. Signed-distance falloff over the shadow margin:
+/// alpha peaks at the card edge and fades quadratically outward.
+fn paint_drop_shadow(pixmap: &mut Pixmap, canvas_w: i32, canvas_h: i32, margin: i32, corner_r: i32) {
+    if margin <= 0 || canvas_w <= 0 || canvas_h <= 0 {
+        return;
+    }
+    let x0 = margin as f32;
+    let y0 = margin as f32;
+    let x1 = (canvas_w - margin) as f32;
+    let y1 = (canvas_h - margin) as f32;
+    let cx = (x0 + x1) / 2.0;
+    let cy = (y0 + y1) / 2.0;
+    let hw = (x1 - x0) / 2.0;
+    let hh = (y1 - y0) / 2.0;
+    let r = corner_r as f32;
+    let m = margin as f32;
+    let data = pixmap.data_mut();
+    for py in 0..canvas_h {
+        let fy = py as f32 + 0.5;
+        for px in 0..canvas_w {
+            let fx = px as f32 + 0.5;
+            let qx = (fx - cx).abs() - (hw - r);
+            let qy = (fy - cy).abs() - (hh - r);
+            let ax = qx.max(0.0);
+            let ay = qy.max(0.0);
+            let d = (ax * ax + ay * ay).sqrt() + qx.max(qy).min(0.0) - r;
+            if d > 0.0 && d < m {
+                let t = 1.0 - d / m;
+                let a = (SHADOW_PEAK_ALPHA * t * t) as u8;
+                let idx = ((py * canvas_w + px) * 4) as usize;
+                if a > data[idx + 3] {
+                    data[idx + 3] = a;
+                }
+            }
+        }
+    }
+}
+
 
 /// Render the bubble's shape into a fresh tiny-skia `Pixmap`. The Pixmap is
 /// premultiplied RGBA at one byte per channel — the caller copies it into the
@@ -1550,26 +1635,28 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         Color::from_hex("#666666")
     };
 
-    // ---- Stadium background ----
+    // ---- Soft drop shadow + rounded card (10%) ----
+    paint_drop_shadow(
+        &mut pixmap,
+        layout.canvas_w,
+        layout.canvas_h,
+        layout.shadow_margin,
+        layout.corner_radius,
+    );
     {
-        let mut paint = Paint::default();
-        paint.set_color(rgb_to_skia(bg));
-        paint.anti_alias = true;
-        let r = layout.corner_radius as f32;
-        let w = layout.canvas_w as f32;
-        let h = layout.canvas_h as f32;
-
-        // Two end-cap circles + middle rect. Overlap is fine — same color.
-        let mut pb = PathBuilder::new();
-        pb.push_circle(r, r, r);
-        pb.push_circle(r, h - r, r);
-        if let Some(p) = pb.finish() {
-            pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
-        }
-        if let Some(rect) = Rect::from_xywh(0.0, r, w, (h - 2.0 * r).max(0.0)) {
-            pixmap.fill_rect(rect, &paint, Transform::identity(), None);
-        }
+        let m = layout.shadow_margin as f32;
+        fill_rounded_rect(
+            &mut pixmap,
+            m,
+            m,
+            (layout.canvas_w - 2 * layout.shadow_margin) as f32,
+            (layout.canvas_h - 2 * layout.shadow_margin) as f32,
+            layout.corner_radius as f32,
+            bg,
+        );
     }
+
+
 
     // ---- Ring (5h) ----
     {

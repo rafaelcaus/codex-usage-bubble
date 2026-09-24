@@ -5,7 +5,18 @@ Fork pessoal de
 (Apache-2.0). Otimizado para quem usa **Codex no plano Pro (cota semanal)**
 pelo app desktop ChatGPT.
 
-## O que mudou em relacao ao upstream (v0.6.0)
+## O que mudou em relacao ao upstream (v0.6.2)
+
+- v0.6.0: bolha vertical minimalista; anel = % restante semanal;
+  countdown preciso; painel semanal + reset/tokens; "Somente sobre o
+  ChatGPT"; updater proprio; escala proporcional 50-360.
+- v0.6.1: cartao 10% arredondado; countdown por extenso PT ("6 dias e
+  19 horas"); fundo vertical corrigido.
+- v0.6.2 (extras do dashboard): painel com **Orcamento diario** (%/dia
+  sobre o tempo exato restante), **Ritmo** (projecao por taxa dos
+  ultimos 15 min: `~%/h -> acaba em ~X`, `parado`, `coletando dados...`
+  com historico persistido em `samples.json`) e **Tokens hoje neste PC**
+  (meia-noite local). Bolha intacta por decisao de design.
 
 - Bolha vertical minimalista, 100% proporcional do tamanho 50 ao 360
   (`Ctrl + rodinha` para redimensionar, min 50).

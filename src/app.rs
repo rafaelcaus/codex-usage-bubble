@@ -137,6 +137,12 @@ struct ProviderUiState {
     reset_text: String,
     /// Fork: "Tokens neste PC desde o reset: 1.234.567" (local sessions).
     tokens_text: String,
+    /// Fork: daily budget "%/dia" from exact remaining time.
+    budget_text: String,
+    /// Fork: burn-rate projection line.
+    pace_text: String,
+    /// Fork: tokens since local midnight.
+    tokens_today_text: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -558,6 +564,10 @@ fn apply_results(
                         }
                     }
                     entry.windows = windows;
+                    // Fork: feed the burn-rate sampler (Codex weekly only).
+                    if id == ProviderId::ChatGpt {
+                        crate::samples::record(entry.windows.primary.utilization);
+                    }
                     entry.primary_text =
                         i18n::format_window_remaining(&windows.primary, &strings);
                     entry.secondary_text =
@@ -639,6 +649,72 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     } else {
         format!("{}: -", strings.tokens_prefix)
     };
+
+    // Daily budget: remaining % spread over the exact days left.
+    entry.budget_text = match entry.windows.primary.resets_at
+        .and_then(|r| r.duration_since(SystemTime::now()).ok())
+        .map(|d| d.as_secs_f64() / 86_400.0)
+    {
+        Some(days) if days > 0.0 => {
+            let used = entry.windows.primary.utilization.clamp(0.0, 100.0);
+            format!(
+                "{}: ~{}%/dia",
+                strings.budget_prefix,
+                crate::samples::fmt_1((100.0 - used) / days)
+            )
+        }
+        _ => format!("{}: -", strings.budget_prefix),
+    };
+
+    // Burn-rate projection from recent samples.
+    let remaining = (100.0 - entry.windows.primary.utilization).clamp(0.0, 100.0);
+    entry.pace_text = match crate::samples::project(remaining) {
+        crate::samples::Pace::Collecting => {
+            format!("{}: coletando dados...", strings.pace_prefix)
+        }
+        crate::samples::Pace::Idle => format!("{}: parado", strings.pace_prefix),
+        crate::samples::Pace::Live {
+            per_hour,
+            hours_left,
+        } => {
+            let when = if hours_left >= 48.0 {
+                format!("~{}d {}h", hours_left as u64 / 24, hours_left as u64 % 24)
+            } else {
+                format!("~{}h", hours_left.round() as u64)
+            };
+            format!(
+                "{}: ~{}%/h -> acaba em {}",
+                strings.pace_prefix,
+                crate::samples::fmt_1(per_hour),
+                when
+            )
+        }
+    };
+
+    // Tokens since local midnight (this PC).
+    entry.tokens_today_text = if id == ProviderId::ChatGpt {
+        match local_midnight().and_then(crate::codex_tokens::tokens_since_reset) {
+            Some(n) => format!(
+                "{}: {}",
+                strings.tokens_today_prefix,
+                crate::codex_tokens::format_tokens(n)
+            ),
+            None => format!("{}: -", strings.tokens_today_prefix),
+        }
+    } else {
+        format!("{}: -", strings.tokens_today_prefix)
+    };
+}
+
+/// Fork: today 00:00 local time as SystemTime (for "tokens today").
+fn local_midnight() -> Option<SystemTime> {
+    use chrono::{Local, TimeZone};
+    let now = Local::now();
+    let midnight = now.date_naive().and_hms_opt(0, 0, 0)?;
+    Local
+        .from_local_datetime(&midnight)
+        .single()
+        .map(|dt| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
 }
 
 fn refresh_countdowns() {
@@ -700,6 +776,16 @@ fn propagate_to_ui() {
         log::info!(
             "bubble data: pct={session_pct:?} countdown='{session_text}' weekly_reset={weekly_resets_at:?}"
         );
+        if let Some(e) = entry {
+            log::info!(
+                "detail data: reset='{}' budget='{}' pace='{}' tokens='{}' today='{}'",
+                e.reset_text,
+                e.budget_text,
+                e.pace_text,
+                e.tokens_text,
+                e.tokens_today_text
+            );
+        }
         bubble::update_data(
             hwnd.to_hwnd(),
             session_pct,
@@ -750,6 +836,9 @@ fn build_panel_data(model: ProviderId) -> PanelData {
         weekly_text: provider_state.primary_text.clone(),
         reset_text: provider_state.reset_text,
         tokens_text: provider_state.tokens_text,
+        budget_text: provider_state.budget_text,
+        pace_text: provider_state.pace_text,
+        tokens_today_text: provider_state.tokens_today_text,
         is_dark: s.is_dark,
         strings,
     }
@@ -764,6 +853,9 @@ fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiSta
         weekly_text: p.primary_text.clone(),
         reset_text: p.reset_text.clone(),
         tokens_text: p.tokens_text.clone(),
+        budget_text: p.budget_text.clone(),
+        pace_text: p.pace_text.clone(),
+        tokens_today_text: p.tokens_today_text.clone(),
         is_dark: snap.is_dark,
         strings: snap.i18n_strings.clone(),
     }
@@ -779,6 +871,9 @@ fn placeholder_panel(model: ProviderId) -> PanelData {
         weekly_text: String::new(),
         reset_text: String::new(),
         tokens_text: String::new(),
+        budget_text: String::new(),
+        pace_text: String::new(),
+        tokens_today_text: String::new(),
         is_dark: false,
         strings,
     }
@@ -861,8 +956,12 @@ fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleSt
         .map(|e| e.tokens_text.as_str())
         .filter(|s| !s.is_empty())
         .unwrap_or("...");
+    let budget = entry
+        .map(|e| e.budget_text.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("...");
     format!(
-        "{label}\n{}: {weekly}\n{reset}\n{tokens}\n{}",
+        "{label}\n{}: {weekly}\n{reset}\n{tokens}\n{budget}\n{}",
         strings.weekly_window, strings.tray_left_click
     )
 }
