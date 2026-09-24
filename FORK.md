@@ -17,6 +17,9 @@ pelo app desktop ChatGPT.
   ultimos 15 min: `~%/h -> acaba em ~X`, `parado`, `coletando dados...`
   com historico persistido em `samples.json`) e **Tokens hoje neste PC**
   (meia-noite local). Bolha intacta por decisao de design.
+- v0.6.4: bolha com titulos+valores (`Tempo para reset:` /
+  `Consumo hoje DD/MM:`), tokens por extenso (`55,3 Milhoes tokens`),
+  countdown +3px bold com shrink-to-fit.
 
 - Bolha vertical minimalista, 100% proporcional do tamanho 50 ao 360
   (`Ctrl + rodinha` para redimensionar, min 50).

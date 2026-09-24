@@ -85,6 +85,7 @@ pub struct BubbleConfig {
     pub weekly_text: String,
     pub weekly_resets_at: Option<SystemTime>,
     pub today_text: String,
+    pub today_title: String,
     pub is_dark: bool,
 }
 
@@ -100,10 +101,11 @@ fn bubble_content_height_logical(width_logical: i32) -> i32 {
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
     let small = ((big * 40) / 100).max(3);
-    let cap = small + 5;
     let g1 = (ring * 8 / 100).max(2);
-    let today_h = small + 2;
-    pad + ring + g1 + cap + 4 + today_h + pad + 2
+    // Two title+value pairs under the ring (reset, today).
+    let th = small + 2;
+    let vh = small + 5;
+    pad + ring + g1 + th + 2 + vh + 4 + th + 2 + vh + pad + 4
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +262,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             weekly_text: config.weekly_text,
             weekly_resets_at: config.weekly_resets_at,
             today_text: config.today_text,
+            today_title: config.today_title,
             is_dark: config.is_dark,
             drag_start_pos: None,
             hidden_by_fullscreen: false,
@@ -337,6 +340,7 @@ pub fn update_data(
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
+    today_title: String,
 ) {
     {
         let mut bubbles = lock_bubbles();
@@ -350,6 +354,7 @@ pub fn update_data(
         b.weekly_text = weekly_text;
         b.weekly_resets_at = weekly_resets_at;
         b.today_text = today_text;
+        b.today_title = today_title;
     }
     sync_pulse_timer(hwnd);
     sync_time_progress_timer(hwnd);
@@ -478,6 +483,7 @@ struct BubbleState {
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
+    today_title: String,
     is_dark: bool,
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
@@ -1461,8 +1467,10 @@ struct BubbleLayout {
     time_ring_stroke_w: f32,
     resta_label_rect: RECT,
     pct_rect: RECT,
+    reset_title_rect: RECT,
     countdown_rect: RECT,
-    today_rect: RECT,
+    today_title_rect: RECT,
+    today_value_rect: RECT,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
@@ -1517,24 +1525,40 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
     };
 
     // Single countdown caption below the ring (nothing else).
-    let cap_h = main_font_px + scale_to_dpi(5, dpi);
+    // Two title+value pairs under the ring: reset countdown, today usage.
+    // Titles use the small font; values use main+3 bold with shrink-to-fit.
+    let title_h = small_font_px + scale_to_dpi(2, dpi);
+    let value_h = main_font_px + scale_to_dpi(5, dpi);
     let ring_gap = (ring_d * 8 / 100).max(2);
-    let y = oy + pad + ring_d + ring_gap;
+    let pair_gap = scale_to_dpi(4, dpi);
+    let line_gap = scale_to_dpi(2, dpi);
+    let mut ty = oy + pad + ring_d + ring_gap;
+    let reset_title_rect = RECT {
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + title_h,
+    };
+    ty += title_h + line_gap;
     let countdown_rect = RECT {
         left: ox + pad,
-        top: y,
+        top: ty,
         right: ox + width_px - pad,
-        bottom: y + cap_h,
+        bottom: ty + value_h,
     };
-    // "HOJE 55,3M" micro-line under the countdown.
-    let today_gap = scale_to_dpi(4, dpi);
-    let today_h = main_font_px + scale_to_dpi(2, dpi);
-    let today_y = y + cap_h + today_gap;
-    let today_rect = RECT {
+    ty += value_h + pair_gap;
+    let today_title_rect = RECT {
         left: ox + pad,
-        top: today_y,
+        top: ty,
         right: ox + width_px - pad,
-        bottom: today_y + today_h,
+        bottom: ty + title_h,
+    };
+    ty += title_h + line_gap;
+    let today_value_rect = RECT {
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + value_h,
     };
     let _ = mem_dc;
 
@@ -1551,8 +1575,10 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         time_ring_stroke_w,
         resta_label_rect,
         pct_rect,
+        reset_title_rect,
         countdown_rect,
-        today_rect,
+        today_title_rect,
+        today_value_rect,
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1901,6 +1927,7 @@ struct PaintInputs {
     weekly_text: String,
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
+    today_title: String,
     is_dark: bool,
     pulse_phase: u32,
 }
@@ -1923,6 +1950,7 @@ fn render(hwnd: HWND) {
                 weekly_text: b.weekly_text.clone(),
                 weekly_resets_at: b.weekly_resets_at,
                 today_text: b.today_text.clone(),
+                today_title: b.today_title.clone(),
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
                 is_dark: true,
@@ -2059,6 +2087,48 @@ fn brighten(c: Color, t: f64) -> Color {
 
 /// Fork (Rafael): vertical minimalist texts — "RESTA" + big remaining-% in
 /// the ring, centered primary caption below it, weekly caption at the bottom.
+/// Title line: small semibold muted, centered. Skips empty text.
+#[allow(clippy::too_many_arguments)]
+fn draw_title_line(hdc: HDC, _font_name: &[u16], font: HFONT, color: Color, rect: &RECT, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    unsafe {
+        SelectObject(hdc, font);
+        SetTextColor(hdc, COLORREF(color.into_colorref()));
+        draw_text_in_rect(hdc, rect, text, DT_CENTER);
+    }
+}
+
+/// Value line: bold full-contrast, base size with shrink-to-fit so long
+/// texts never clip at small bubble sizes.
+fn draw_value_line(
+    hdc: HDC,
+    font_name: &[u16],
+    base_px: i32,
+    color: COLORREF,
+    rect: &RECT,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let avail = (rect.right - rect.left).max(0);
+    // NOTE: no `dpi` in paint scope; shrink-to-fit guarantees no clipping.
+    // Fit target leaves a 2px breathing room: measure_text_w uses a NORMAL
+    // font while we draw BOLD (slightly wider).
+    let mut px = base_px;
+    while px > 4 && measure_text_w(hdc, text, px) > avail.saturating_sub(2) {
+        px -= 1;
+    }
+    let font = create_font(px, font_name, FW_BOLD.0 as i32);
+    unsafe {
+        SelectObject(hdc, font);
+        SetTextColor(hdc, color);
+        draw_text_in_rect(hdc, rect, text, DT_CENTER);
+        let _ = DeleteObject(font);
+    }
+}
 fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
     let text_color = if inputs.is_dark {
         Color::from_hex("#EAEAEA")
@@ -2093,48 +2163,46 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         };
         draw_text_in_rect(hdc, &layout.pct_rect, &pct_text, DT_CENTER);
 
-        // Single countdown caption: precise time left, BOLD, pure
-        // black-on-light / white-on-dark. Base size +3px over the caption
-        // font, then shrink-to-fit so long texts ("6 dias e 19 horas")
-        // never clip at small bubble sizes.
-        let count_color = if inputs.is_dark {
-            Color::from_hex("#FFFFFF")
-        } else {
-            Color::from_hex("#000000")
-        };
-        let avail_w = (layout.countdown_rect.right - layout.countdown_rect.left).max(0);
-        // NOTE: no `dpi` in scope here; +3px literal matches the logical
-        // formula at 96dpi and shrink-to-fit guarantees no clipping anywhere.
-        // Fit target leaves a 2px breathing room: measure_text_w uses a
-        // NORMAL font while we draw BOLD (slightly wider).
-        let mut count_px = layout.main_font_px + 3;
-        while count_px > 4
-            && measure_text_w(hdc, &inputs.session_text, count_px) > avail_w.saturating_sub(2)
-        {
-            count_px -= 1;
-        }
-        let count_font = create_font(count_px, &font_name, FW_BOLD.0 as i32);
-        SelectObject(hdc, count_font);
-        SetTextColor(hdc, COLORREF(count_color.into_colorref()));
-        draw_text_in_rect(hdc, &layout.countdown_rect, &inputs.session_text, DT_CENTER);
 
-        // "HOJE 55,3M" micro-line (account daily buckets; empty until the
-        // first app-server answer arrives).
-        if !inputs.today_text.is_empty() {
-            SelectObject(hdc, small_font);
-            SetTextColor(hdc, COLORREF(muted_color.into_colorref()));
-            draw_text_in_rect(
-                hdc,
-                &layout.today_rect,
-                &format!("HOJE {}", inputs.today_text),
-                DT_CENTER,
-            );
-        }
+        // Reset title + precise value.
+        draw_title_line(
+            hdc,
+            &font_name,
+            small_font,
+            muted_color,
+            &layout.reset_title_rect,
+            "Tempo para reset:",
+        );
+        draw_value_line(
+            hdc,
+            &font_name,
+            layout.main_font_px + 3,
+            COLORREF(0x00FFFFFF),
+            &layout.countdown_rect,
+            &inputs.session_text,
+        );
+        // Today title + value (dynamic; skipped until the API answers).
+        draw_title_line(
+            hdc,
+            &font_name,
+            small_font,
+            muted_color,
+            &layout.today_title_rect,
+            &inputs.today_title,
+        );
+        draw_value_line(
+            hdc,
+            &font_name,
+            layout.main_font_px + 3,
+            COLORREF(0x00FFFFFF),
+            &layout.today_value_rect,
+            &inputs.today_text,
+        );
+
 
         SelectObject(hdc, prev_font);
         let _ = DeleteObject(big_font);
         let _ = DeleteObject(small_font);
-        let _ = DeleteObject(count_font);
     }
 }
 

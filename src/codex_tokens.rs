@@ -225,6 +225,31 @@ pub fn format_compact(n: i64) -> String {
     }
 }
 
+/// Full-words PT form for the bubble value line, e.g. "55,3 Milhões tokens".
+/// Returns (number_part, unit_word).
+pub fn format_tokens_words(n: i64) -> (String, &'static str) {
+    let n = n.max(0);
+    if n >= 1_000_000 {
+        let v = n as f64 / 1_000_000.0;
+        let num = format!("{v:.1}").replace('.', ",");
+        let unit = if (v - 1.0).abs() < 0.049 {
+            "Milhão tokens"
+        } else {
+            "Milhões tokens"
+        };
+        (num, unit)
+    } else if n >= 1_000 {
+        (
+            format!("{:.1}", n as f64 / 1_000.0).replace('.', ","),
+            "mil tokens",
+        )
+    } else if n == 1 {
+        ("1".into(), "token")
+    } else {
+        (n.to_string(), "tokens")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +285,11 @@ mod tests {
         assert_eq!(format_compact(55300000), "55,3M");
         assert_eq!(format_compact(12400), "12,4K");
         assert_eq!(format_compact(999), "999");
+        assert_eq!(format_tokens_words(55288967), ("55,3".into(), "Milhões tokens"));
+        assert_eq!(format_tokens_words(1_000_000), ("1,0".into(), "Milhão tokens"));
+        assert_eq!(format_tokens_words(2500), ("2,5".into(), "mil tokens"));
+        assert_eq!(format_tokens_words(1), ("1".into(), "token"));
+        assert_eq!(format_tokens_words(0), ("0".into(), "tokens"));
     }
 
     #[test]

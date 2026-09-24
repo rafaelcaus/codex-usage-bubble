@@ -145,6 +145,8 @@ struct ProviderUiState {
     tokens_today_text: String,
     /// Fork: compact "55,3M" for the bubble micro-line (API value only).
     today_micro: String,
+    /// Fork: "Consumo hoje 24/09:" title line for the bubble.
+    today_title: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -369,6 +371,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         weekly_text: placeholder,
         weekly_resets_at: None,
         today_text: String::new(),
+        today_title: String::new(),
         is_dark,
     });
     if hwnd != HWND::default() {
@@ -700,6 +703,12 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     // Tokens today: account API first (covers desktop app + CLI on this
     // machine), local CLI sessions as fallback, dash when neither.
     let api = crate::appserver::latest();
+    // "Consumo hoje DD/MM:" title for the bubble (local date).
+    let today_title = {
+        use chrono::Local;
+        let d = Local::now().format("%d/%m").to_string();
+        format!("Consumo hoje {d}:")
+    };
     if id == ProviderId::ChatGpt {
         if let Some(t) = api.tokens_today {
             let n = (t.max(0) as u64).min(u64::MAX);
@@ -707,9 +716,12 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
                 "Tokens hoje: {}",
                 crate::codex_tokens::format_tokens(n)
             );
-            entry.today_micro = crate::codex_tokens::format_compact(t);
+            let (num, unit) = crate::codex_tokens::format_tokens_words(t);
+            entry.today_micro = format!("{num} {unit}");
+            entry.today_title = today_title;
         } else {
             entry.today_micro.clear();
+            entry.today_title.clear();
             match local_midnight().and_then(crate::codex_tokens::tokens_since_reset) {
                 Some(n) if n > 0 => {
                     entry.tokens_today_text = format!(
@@ -725,6 +737,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     } else {
         entry.today_micro.clear();
+        entry.today_title.clear();
         entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
 }
@@ -820,6 +833,9 @@ fn propagate_to_ui() {
             weekly_resets_at,
             entry
                 .map(|s| s.today_micro.clone())
+                .unwrap_or_default(),
+            entry
+                .map(|s| s.today_title.clone())
                 .unwrap_or_default(),
         );
     }
