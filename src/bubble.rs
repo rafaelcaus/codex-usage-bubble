@@ -1,10 +1,10 @@
-// Floating vertical-pill bubble window.
+// Floating rounded-card bubble window.
 //
 // Top-level window with WS_POPUP + WS_EX_LAYERED + WS_EX_TOPMOST + WS_EX_NOACTIVATE.
-// The shape is a vertical pill (rounded-rect with corner_radius = width/2).
-// Top holds the progress ring (PRIMARY window = weekly quota on Pro)
-// with "RESTA" + big remaining-% glyph. Below it, a single countdown
-// caption: precise time left to the weekly reset. Nothing else.
+// Slightly rounded card (corner_radius = 10% of width) so wide captions are
+// never pinched by curves. Top holds the progress ring (PRIMARY window =
+// weekly quota on Pro) with "RESTA" + big remaining-% glyph. Below it, a
+// single countdown caption: precise time left to the weekly reset.
 //
 // Painting is hybrid: tiny-skia renders the shape (AA fills + AA stroked arc)
 // into a Pixmap; the Pixmap is copied byte-for-byte into a 32bpp BI_RGB DIB;
@@ -89,7 +89,7 @@ fn bubble_height_logical(width_logical: i32) -> i32 {
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
     let small = ((big * 40) / 100).max(3);
-    let cap = small + 2;
+    let cap = small + 5;
     let g1 = (ring * 8 / 100).max(2);
     pad + ring + g1 + cap + pad + 2
 }
@@ -644,7 +644,10 @@ fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 }
 
 fn corner_radius_px(w: i32, h: i32) -> i32 {
-    w.min(h) / 2
+    // Fork: match the painted shape (10% rounded card, not a full pill),
+    // so clicks/hit-testing agree with the visible outline. `h` unused.
+    let _ = h;
+    (w * 10 / 100).max(1)
 }
 
 fn point_in_rounded_rect(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
@@ -1487,7 +1490,7 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
     };
 
     // Single countdown caption below the ring (nothing else).
-    let cap_h = main_font_px + scale_to_dpi(2, dpi);
+    let cap_h = main_font_px + scale_to_dpi(5, dpi);
     let ring_gap = (ring_d * 8 / 100).max(2);
     let y = pad + ring_d + ring_gap;
     let countdown_rect = RECT {
@@ -1501,7 +1504,7 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
     BubbleLayout {
         canvas_w: width_px,
         canvas_h: height_px,
-        corner_radius: width_px / 2,
+        corner_radius: (width_px * 10 / 100).max(1),
         ring_cx,
         ring_cy,
         ring_radius,
@@ -1955,13 +1958,26 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         draw_text_in_rect(hdc, &layout.pct_rect, &pct_text, DT_CENTER);
 
         // Single countdown caption: precise time left, BOLD, pure
-        // black-on-light / white-on-dark for maximum legibility.
+        // black-on-light / white-on-dark. Base size +3px over the caption
+        // font, then shrink-to-fit so long texts ("6 dias e 19 horas")
+        // never clip at small bubble sizes.
         let count_color = if inputs.is_dark {
             Color::from_hex("#FFFFFF")
         } else {
             Color::from_hex("#000000")
         };
-        let count_font = create_font(layout.main_font_px, &font_name, FW_BOLD.0 as i32);
+        let avail_w = (layout.countdown_rect.right - layout.countdown_rect.left).max(0);
+        // NOTE: no `dpi` in scope here; +3px literal matches the logical
+        // formula at 96dpi and shrink-to-fit guarantees no clipping anywhere.
+        // Fit target leaves a 2px breathing room: measure_text_w uses a
+        // NORMAL font while we draw BOLD (slightly wider).
+        let mut count_px = layout.main_font_px + 3;
+        while count_px > 4
+            && measure_text_w(hdc, &inputs.session_text, count_px) > avail_w.saturating_sub(2)
+        {
+            count_px -= 1;
+        }
+        let count_font = create_font(count_px, &font_name, FW_BOLD.0 as i32);
         SelectObject(hdc, count_font);
         SetTextColor(hdc, COLORREF(count_color.into_colorref()));
         draw_text_in_rect(hdc, &layout.countdown_rect, &inputs.session_text, DT_CENTER);

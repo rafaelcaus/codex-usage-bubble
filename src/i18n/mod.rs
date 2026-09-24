@@ -187,8 +187,9 @@ pub fn format_window_remaining(window: &crate::usage::Window, strings: &LocaleSt
     }
 }
 
-/// Fork (Rafael): precise two-unit countdown — "6d 3h", "5h 12m", "3m 20s".
-/// Used by the expanded panel's "time left to reset" line.
+/// Fork (Rafael): precise two-unit countdown in full PT words —
+/// "6 dias e 19 horas", "5 horas e 12 minutos", "3 minutos e 20 segundos".
+/// Singular/plural handled; zero parts omitted ("6 dias", not "6 dias e 0 horas").
 pub fn format_precise_countdown(resets_at: Option<SystemTime>, strings: &LocaleStrings) -> String {
     let Some(reset) = resets_at else {
         return String::new();
@@ -201,14 +202,33 @@ pub fn format_precise_countdown(resets_at: Option<SystemTime>, strings: &LocaleS
     let h = secs % 86_400 / 3_600;
     let m = secs % 3_600 / 60;
     let s = secs % 60;
+    fn qty(n: u64, one: &str, many: &str) -> String {
+        format!("{n} {}", if n == 1 { one } else { many })
+    }
     if d >= 1 {
-        format!("{d}{} {h}{}", strings.day_suffix, strings.hour_suffix)
+        if h >= 1 {
+            format!("{} e {}", qty(d, "dia", "dias"), qty(h, "hora", "horas"))
+        } else {
+            qty(d, "dia", "dias")
+        }
     } else if h >= 1 {
-        format!("{h}{} {m}{}", strings.hour_suffix, strings.minute_suffix)
+        if m >= 1 {
+            format!("{} e {}", qty(h, "hora", "horas"), qty(m, "minuto", "minutos"))
+        } else {
+            qty(h, "hora", "horas")
+        }
     } else if m >= 1 {
-        format!("{m}{} {s}{}", strings.minute_suffix, strings.second_suffix)
+        if s >= 1 {
+            format!(
+                "{} e {}",
+                qty(m, "minuto", "minutos"),
+                qty(s, "segundo", "segundos")
+            )
+        } else {
+            qty(m, "minuto", "minutos")
+        }
     } else {
-        format!("{s}{}", strings.second_suffix)
+        qty(s, "segundo", "segundos")
     }
 }
 
