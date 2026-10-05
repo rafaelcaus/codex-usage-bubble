@@ -33,7 +33,9 @@ $codex = Get-Command codex -ErrorAction SilentlyContinue
 if (-not $codex) {
     if (Get-Command npm -ErrorAction SilentlyContinue) {
         Info 'Codex CLI ausente; instalando via npm...'
-        npm install -g @openai/codex
+        # Via cmd (npm.cmd): evita a ExecutionPolicy que bloqueia o npm.ps1
+        # no PowerShell padrao do Windows.
+        cmd /c "npm install -g @openai/codex"
         $codex = Get-Command codex -ErrorAction SilentlyContinue
     }
     if (-not $codex) { throw 'Codex CLI nao encontrado e nao foi possivel instalar via npm. Instale Node LTS + Codex CLI e rode de novo.' }
