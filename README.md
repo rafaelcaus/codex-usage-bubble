@@ -7,6 +7,15 @@
 > para a lista de mudancas. Upstream:
 > https://github.com/tiennm99/claude-code-usage-bubble (Apache-2.0).
 
+## ⬇ Baixar para Windows (sempre a versao mais nova)
+
+**[claude-code-usage-bubble.exe — baixar latest](https://github.com/rafaelcaus/codex-usage-bubble/releases/latest/download/claude-code-usage-bubble.exe)**
+
+> Este link baixa **sempre a release mais recente publicada aqui**:
+> cada versao nova que eu soltar atualiza o download automaticamente.
+> Instalacao em outro PC: siga o [COMO INSTALAR](<COMO INSTALAR.md>)
+> (1 comando no PowerShell faz tudo sozinho).
+
 A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
