@@ -71,8 +71,6 @@ const SHADOW_PEAK_ALPHA: f32 = 72.0;
 const CLASS_NAME: &str = "ClaudeCodeUsageBubble";
 const FULLSCREEN_POLL_MS: u32 = 350;
 const FULLSCREEN_EDGE_TOLERANCE_PX: i32 = 2;
-const FIVE_HOURS_SECS: u64 = 5 * 60 * 60;
-const SEVEN_DAYS_SECS: u64 = 7 * 24 * 60 * 60;
 
 pub struct BubbleConfig {
     pub model: ProviderId,
@@ -87,45 +85,29 @@ pub struct BubbleConfig {
     pub today_text: String,
     pub today_title: String,
     pub average_text: String,
+    pub quota_label: String,
+    pub secondary_label: String,
+    pub quota_duration_secs: Option<u64>,
     pub is_dark: bool,
 }
 
 /// Fork (Rafael): minimal vertical card — ring + ONE countdown caption.
 /// Height is computed from the exact same content math as the layout below
 /// (in logical units), so the window always fits its content at any DPI.
-fn bubble_height_logical(width_logical: i32) -> i32 {
-    bubble_content_height_logical(width_logical) + 2 * SHADOW_MARGIN_LOGICAL
+fn bubble_height_logical(width_logical: i32, dual:bool) -> i32 {
+    bubble_content_height_logical(width_logical,dual) + 2 * SHADOW_MARGIN_LOGICAL
 }
 
-fn bubble_content_height_logical(width_logical: i32) -> i32 {
+fn bubble_content_height_logical(width_logical: i32, dual:bool) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
     let small = ((big * 40) / 100).max(3);
     let g1 = (ring * 8 / 100).max(2);
-    // Two title+value pairs under the ring (reset, today).
+    // Renewal, optional second quota, local activity and account average.
     let th = small + 2;
     let vh = small + 5;
-    pad + ring + g1 + 3 * (th + 2 + vh) + 2 * 4 + pad + 4
-}
-
-#[derive(Clone, Copy)]
-enum UsageWindowKind {
-    Primary,
-    Secondary,
-}
-
-fn window_duration_secs(model: ProviderId, window: UsageWindowKind) -> u64 {
-    // Claude exposes 5h/7d directly. Codex exposes primary/secondary fields;
-    // the product maps those to the same short/long windows in the compact UI.
-    match (model, window) {
-        (ProviderId::Claude, UsageWindowKind::Primary) => FIVE_HOURS_SECS,
-        (ProviderId::Claude, UsageWindowKind::Secondary) => SEVEN_DAYS_SECS,
-        (ProviderId::ChatGpt, UsageWindowKind::Primary) => FIVE_HOURS_SECS,
-        (ProviderId::ChatGpt, UsageWindowKind::Secondary) => SEVEN_DAYS_SECS,
-        (ProviderId::OpenCodeGo, UsageWindowKind::Primary) => SEVEN_DAYS_SECS,
-        (ProviderId::OpenCodeGo, UsageWindowKind::Secondary) => 30 * 24 * 60 * 60,
-    }
+    pad + ring + g1 + (3 + i32::from(dual)) * (th + 2 + vh) + (2 + i32::from(dual)) * 4 + pad + 4
 }
 
 fn remaining_fraction(resets_at: Option<SystemTime>, duration_secs: u64) -> Option<f32> {
@@ -195,7 +177,7 @@ pub fn create(config: BubbleConfig) -> HWND {
     let dpi_for_create = crate::os::dpi::for_system();
     let width_px = scale_to_dpi(initial_size_logical, dpi_for_create)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi_for_create);
-    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical), dpi_for_create);
+    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some()), dpi_for_create);
     let (x, y) = config
         .position
         .unwrap_or_else(|| default_position(width_px, height_px, config.model));
@@ -265,6 +247,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             today_text: config.today_text,
             today_title: config.today_title,
             average_text: config.average_text,
+            quota_label:config.quota_label,secondary_label:config.secondary_label,quota_duration_secs:config.quota_duration_secs,
             is_dark: config.is_dark,
             drag_start_pos: None,
             hidden_by_fullscreen: false,
@@ -344,12 +327,14 @@ pub fn update_data(
     today_text: String,
     today_title: String,
     average_text: String,
+    quota_label: String,
+    secondary_label: String,
+    quota_duration_secs: Option<u64>,
 ) {
-    {
+    let resize = {
         let mut bubbles = lock_bubbles();
-        let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else {
-            return;
-        };
+        let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else { return; };
+        let changed=b.weekly_pct.is_some()!=weekly_pct.is_some();
         b.session_pct = session_pct;
         b.session_text = session_text;
         b.session_resets_at = session_resets_at;
@@ -359,6 +344,19 @@ pub fn update_data(
         b.today_text = today_text;
         b.today_title = today_title;
         b.average_text = average_text;
+        b.quota_label=quota_label;b.secondary_label=secondary_label;b.quota_duration_secs=quota_duration_secs;
+        changed.then_some((b.size_logical,b.dpi,b.weekly_pct.is_some()))
+    };
+    if let Some((width,dpi,dual))=resize {
+        unsafe {
+            let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
+            let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
+            let h=scale_to_dpi(bubble_height_logical(width,dual),dpi);
+            let mut info=MONITORINFO {cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
+            let monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
+            let y=if GetMonitorInfoW(monitor,&mut info).as_bool(){rect.top.min(info.rcWork.bottom-h).max(info.rcWork.top)}else{rect.top};
+            let _=SetWindowPos(hwnd,HWND::default(),rect.left,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE);
+        }
     }
     sync_pulse_timer(hwnd);
     sync_time_progress_timer(hwnd);
@@ -489,6 +487,9 @@ struct BubbleState {
     today_text: String,
     today_title: String,
     average_text: String,
+    quota_label: String,
+    secondary_label: String,
+    quota_duration_secs: Option<u64>,
     is_dark: bool,
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
@@ -715,7 +716,7 @@ fn resize_step(hwnd: HWND, delta: i32) {
 }
 
 pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
-    let (new_logical, dpi) = {
+    let (new_logical, dpi, dual) = {
         let mut bubbles = lock_bubbles();
         let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else {
             return;
@@ -725,11 +726,11 @@ pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
             return;
         }
         b.size_logical = new_logical;
-        (new_logical, b.dpi)
+        (new_logical, b.dpi, b.weekly_pct.is_some())
     };
     let width_px = scale_to_dpi(new_logical, dpi)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
-    let height_px = scale_to_dpi(bubble_height_logical(new_logical), dpi);
+    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual), dpi);
     let mut r = RECT::default();
     unsafe {
         let _ = GetWindowRect(hwnd, &mut r);
@@ -1474,6 +1475,8 @@ struct BubbleLayout {
     pct_rect: RECT,
     reset_title_rect: RECT,
     countdown_rect: RECT,
+    secondary_title_rect: RECT,
+    secondary_value_rect: RECT,
     today_title_rect: RECT,
     today_value_rect: RECT,
     average_title_rect: RECT,
@@ -1483,11 +1486,11 @@ struct BubbleLayout {
     main_font_px: i32,
 }
 
-fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayout {
+fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool) -> BubbleLayout {
     // Content box (the visible card). The canvas adds a shadow margin all
     // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical), dpi);
+    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual), dpi);
     let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let canvas_w = width_px + 2 * margin_px;
     let canvas_h = height_px + 2 * margin_px;
@@ -1554,6 +1557,9 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         bottom: ty + value_h,
     };
     ty += value_h + pair_gap;
+    let secondary_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
+    let secondary_value_rect=RECT {left:ox+pad,top:ty+title_h+line_gap,right:ox+width_px-pad,bottom:ty+title_h+line_gap+value_h};
+    if dual { ty+=title_h+line_gap+value_h+pair_gap; }
     let today_title_rect = RECT {
         left: ox + pad,
         top: ty,
@@ -1592,6 +1598,8 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         pct_rect,
         reset_title_rect,
         countdown_rect,
+        secondary_title_rect,
+        secondary_value_rect,
         today_title_rect,
         today_value_rect,
         average_title_rect,
@@ -1779,10 +1787,7 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         if let Some(p) = pb.finish() {
             pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
         }
-        if let Some(frac) = remaining_fraction(
-            inputs.session_resets_at,
-            window_duration_secs(inputs.model, UsageWindowKind::Primary),
-        ) {
+        if let Some(frac) = inputs.quota_duration_secs.and_then(|duration|remaining_fraction(inputs.session_resets_at,duration)) {
             if frac > 0.0 {
                 let mut paint = Paint::default();
                 paint.set_color(rgb_to_skia(time_fill));
@@ -1946,6 +1951,9 @@ struct PaintInputs {
     today_text: String,
     today_title: String,
     average_text: String,
+    quota_label: String,
+    secondary_label: String,
+    quota_duration_secs: Option<u64>,
     is_dark: bool,
     pulse_phase: u32,
 }
@@ -1970,6 +1978,7 @@ fn render(hwnd: HWND) {
                 today_text: b.today_text.clone(),
                 today_title: b.today_title.clone(),
                 average_text: b.average_text.clone(),
+                quota_label:b.quota_label.clone(),secondary_label:b.secondary_label.clone(),quota_duration_secs:b.quota_duration_secs,
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
                 is_dark: true,
@@ -1988,7 +1997,7 @@ fn render(hwnd: HWND) {
             ReleaseDC(hwnd, screen_dc);
             return;
         }
-        let layout = compute_bubble_layout(size_logical, dpi, mem_dc);
+        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some());
 
         static RENDER_LOGGED: AtomicBool = AtomicBool::new(false);
         if !RENDER_LOGGED.swap(true, Ordering::Relaxed) {
@@ -2171,7 +2180,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
 
         // "RESTA": full-contrast so it stays readable at tiny sizes.
         SetTextColor(hdc, COLORREF(text_color.into_colorref()));
-        draw_text_in_rect(hdc, &layout.resta_label_rect, "RESTA", DT_CENTER);
+        draw_text_in_rect(hdc, &layout.resta_label_rect, &format!("{} RESTA",inputs.quota_label), DT_CENTER);
 
         // Big remaining-% glyph centered in the ring.
         SelectObject(hdc, big_font);
@@ -2190,7 +2199,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
             small_font,
             muted_color,
             &layout.reset_title_rect,
-            "Cota renova em:",
+            &format!("{} · renova em:",inputs.quota_label),
         );
         draw_value_line(
             hdc,
@@ -2200,7 +2209,13 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
             &layout.countdown_rect,
             &inputs.session_text,
         );
-        // Today title + value (dynamic; skipped until the API answers).
+        if let Some(used)=inputs.weekly_pct {
+            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.secondary_title_rect,
+                &format!("{} · {:.0}% restantes",inputs.secondary_label,100.0-used));
+            let renewal=if inputs.weekly_text.is_empty(){"Renovação indisponível".into()}else{format!("Renova em {}",inputs.weekly_text)};
+            draw_value_line(hdc,&font_name,layout.main_font_px+3,COLORREF(0x00FFFFFF),&layout.secondary_value_rect,&renewal);
+        }
+        // Local daily tokens and the completed-day account average.
         draw_title_line(
             hdc,
             &font_name,
@@ -2296,10 +2311,13 @@ mod metric_layout_tests {
     fn three_metric_pairs_fit_at_supported_sizes_and_dpis() {
         for width in [50, 80, 120, 180, 240] {
             for dpi in [96, 120, 144, 192] {
-                let layout = compute_bubble_layout(width, dpi, HDC::default());
+              for dual in [false,true] {
+                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual);
                 assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
                 assert!(layout.average_value_rect.bottom <= layout.canvas_h - layout.shadow_margin,
                     "width={width} dpi={dpi}");
+                if dual { assert!(layout.secondary_value_rect.bottom < layout.today_title_rect.top); }
+              }
             }
         }
     }
@@ -2309,13 +2327,14 @@ mod metric_layout_tests {
         let Ok(path) = std::env::var("CODEX_WIDGET_PREVIEW_PATH") else { return };
         unsafe {
             let dc = CreateCompatibleDC(None);
-            let layout = compute_bubble_layout(120, 144, dc);
+            let dual=std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref()!=Ok("single");
+            let layout = compute_bubble_layout(120, 144, dc,dual);
             let inputs = PaintInputs {
                 model: ProviderId::ChatGpt, session_pct: Some(64.0),
-                session_text: "6 dias e 2 horas".into(), session_resets_at:None,
-                weekly_pct:Some(64.0),weekly_text:String::new(),weekly_resets_at:None,
+                session_text: if dual {"2 horas e 30 minutos"}else{"6 dias e 2 horas"}.into(), session_resets_at:None,
+                weekly_pct:if dual {Some(20.0)}else{None},weekly_text:"6 dias e 2 horas".into(),weekly_resets_at:None,
                 today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),
-                average_text:"23.456.789 tokens/dia".into(),is_dark:true,pulse_phase:0,
+                average_text:"23.456.789 tokens/dia".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,pulse_phase:0,
             };
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {

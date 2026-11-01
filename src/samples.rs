@@ -5,7 +5,7 @@
 // the recent burn rate. States: Collecting (not enough history yet),
 // Idle (no measurable burn), Live (projection).
 //
-// Samples persist in %APPDATA%\ClaudeCodeUsageBubble\samples.json so a
+// Samples persist in %APPDATA%\ClaudeCodeUsageBubble\weekly-samples-v2.json so a
 // restart doesn't reset the observation window. File holds at most a day
 // of minute-spaced samples (tiny).
 
@@ -26,7 +26,7 @@ pub struct Sample {
 fn samples_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| {
         d.join("ClaudeCodeUsageBubble")
-            .join("samples.json")
+            .join("weekly-samples-v2.json")
     })
 }
 

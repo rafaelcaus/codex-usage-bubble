@@ -90,8 +90,10 @@ fn try_usage_endpoint(http: &Client, token: &str) -> Result<Option<UsageWindows>
         Ok(b) => b,
         Err(_) => return Ok(None),
     };
-    let primary = body.five_hour.map(bucket_to_window).unwrap_or_default();
-    let secondary = body.seven_day.map(bucket_to_window).unwrap_or_default();
+    let mut primary = body.five_hour.map(bucket_to_window).unwrap_or_default();
+    if primary.reported { primary.duration_secs=Some(18000); }
+    let mut secondary = body.seven_day.map(bucket_to_window).unwrap_or_default();
+    if secondary.reported { secondary.duration_secs=Some(604800); }
     Ok(Some(UsageWindows { primary, secondary }))
 }
 
@@ -135,6 +137,8 @@ fn bucket_to_window(bucket: Bucket) -> Window {
     Window {
         utilization: bucket.utilization.clamp(0.0, 100.0),
         resets_at: bucket.resets_at.as_deref().and_then(parse_iso8601),
+        duration_secs: None,
+        reported: true,
     }
 }
 

@@ -24,7 +24,7 @@ const CLASS_NAME: &str = "ClaudeCodeUsageBubblePanel";
 // Fork (Rafael): widened + taller — weekly bar row plus "reset" and "tokens"
 // detail lines (5h row removed: Pro plan = weekly credits only).
 const PANEL_W_LOGICAL: i32 = 380;
-const PANEL_H_LOGICAL: i32 = 186;
+const PANEL_H_LOGICAL: i32 = 216;
 const PADDING_LOGICAL: i32 = 14;
 const ROW_GAP_LOGICAL: i32 = 8;
 const LABEL_W_LOGICAL: i32 = 28;
@@ -32,11 +32,8 @@ const RIGHT_TEXT_W_LOGICAL: i32 = 200;
 const BAR_HEIGHT_LOGICAL: i32 = 14;
 
 pub struct PanelData {
+    pub windows: crate::usage::UsageWindows,
     pub model: ProviderId,
-    pub session_pct: f64,
-    pub session_text: String,
-    pub weekly_pct: f64,
-    pub weekly_text: String,
     pub reset_text: String,
     pub tokens_text: String,
     pub budget_text: String,
@@ -300,8 +297,6 @@ fn paint(hwnd: HWND, hdc: HDC) {
     } else {
         Color::from_hex("#D6D6D6")
     };
-    let weekly_accent =
-        crate::usage_color::bar_fill_color(data.model, data.is_dark, data.weekly_pct);
 
     unsafe {
         let bg_brush = CreateSolidBrush(COLORREF(bg.into_colorref()));
@@ -343,27 +338,23 @@ fn paint(hwnd: HWND, hdc: HDC) {
             rc.right - bar_x - scaled(PADDING_LOGICAL) - scaled(RIGHT_TEXT_W_LOGICAL) - scaled(4);
         let row1_y = scaled(PADDING_LOGICAL) + scaled(24);
 
-        // Fork: weekly-only (Pro plan). Single usage row, then the detail
-        // lines: precise reset, daily budget, burn-rate pace, tokens since
-        // reset, tokens today. All from the PRIMARY (= weekly quota) window.
-        draw_row(
-            hdc,
-            &data.strings.weekly_window,
-            scaled(PADDING_LOGICAL),
-            row1_y,
-            bar_x,
-            bar_w,
-            scaled(BAR_HEIGHT_LOGICAL),
-            data.weekly_pct,
-            &data.weekly_text,
-            text_color,
-            track,
-            weekly_accent,
-            dpi,
-        );
-
+        let windows=data.windows.displayed();
+        let mut next_y=row1_y;
+        for window in &windows {
+            let label=window.label();
+            let text=crate::i18n::format_window_remaining(window,&data.strings);
+            let accent=crate::usage_color::bar_fill_color(data.model,data.is_dark,window.utilization);
+            draw_row(hdc,&label,scaled(PADDING_LOGICAL),next_y,bar_x,bar_w,
+                scaled(BAR_HEIGHT_LOGICAL),window.utilization,&text,text_color,track,accent,dpi);
+            next_y+=scaled(30);
+        }
+        if windows.is_empty() {
+            draw_text(hdc,"Cota indisponível",text_color,scaled(PADDING_LOGICAL),next_y,
+                rc.right-scaled(2*PADDING_LOGICAL),scaled(18),false,dpi);
+            next_y+=scaled(30);
+        }
         let text_w = rc.right - 2 * scaled(PADDING_LOGICAL);
-        let mut line_y = row1_y + scaled(BAR_HEIGHT_LOGICAL) + scaled(12);
+        let mut line_y = next_y + scaled(4);
         let line_step = scaled(22);
         for line in [
             &data.reset_text,
@@ -520,10 +511,7 @@ fn clone_data() -> Option<PanelData> {
     let p = guard.as_ref()?;
     Some(PanelData {
         model: p.data.model,
-        session_pct: p.data.session_pct,
-        session_text: p.data.session_text.clone(),
-        weekly_pct: p.data.weekly_pct,
-        weekly_text: p.data.weekly_text.clone(),
+        windows: p.data.windows,
         reset_text: p.data.reset_text.clone(),
         tokens_text: p.data.tokens_text.clone(),
         budget_text: p.data.budget_text.clone(),

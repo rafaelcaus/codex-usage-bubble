@@ -102,7 +102,7 @@ impl I18n {
 fn portuguese_strings() -> LocaleStrings {
     LocaleStrings {
         window_title: "Consumo de IA".into(),
-        help_body: "COMO USAR\nClique esquerdo no widget: ver detalhes.\nClique direito: abrir o menu.\nArraste o widget para mudar de lugar.\nCtrl + roda do mouse: aumentar ou diminuir.\nClique no ícone perto do relógio para mostrar ou ocultar.\n\nO QUE CADA NÚMERO SIGNIFICA\nPorcentagem: cota disponível na conta. O prazo indica quando a cota renova.\nHoje neste PC (Codex): tokens registrados neste computador desde a meia-noite local; leitura a cada 5 segundos. Não inclui outros computadores nem sessões remotas sem registros neste PC.\nMédia de 7 dias da conta: média dos sete dias completos anteriores, sem incluir hoje. Se faltar algum dia, aparece como indisponível.\n\nAJUSTES\nO intervalo da consulta da cota não altera a leitura dos tokens locais.\nMostrar só sobre a janela do Codex: o widget aparece quando essa janela está em primeiro plano.\nBuscar novas versões automaticamente apenas procura atualizações; a instalação é uma ação separada.".into(),
+        help_body: "COMO USAR\nClique esquerdo no widget: ver detalhes.\nClique direito: abrir o menu.\nArraste o widget para mudar de lugar.\nCtrl + roda do mouse: aumentar ou diminuir.\nClique no ícone perto do relógio para mostrar ou ocultar.\n\nO QUE CADA NÚMERO SIGNIFICA\nLimites: cada janela da conta tem sua própria porcentagem disponível e prazo de renovação. Se houver cotas de 5 horas e 7 dias, ambas aparecem. Se vier só uma, só ela será exibida. O ícone perto do relógio destaca a cota com maior porcentagem usada.\nHoje neste PC (Codex): tokens registrados neste computador desde a meia-noite local; leitura a cada 5 segundos. Não inclui outros computadores nem sessões remotas sem registros neste PC.\nMédia de 7 dias da conta: média dos sete dias completos anteriores, sem incluir hoje. Se faltar algum dia, aparece como indisponível.\n\nAJUSTES\nO intervalo da consulta da cota não altera a leitura dos tokens locais.\nMostrar só sobre a janela do Codex: o widget aparece quando essa janela está em primeiro plano.\nBuscar novas versões automaticamente apenas procura atualizações; a instalação é uma ação separada.".into(),
         history_refresh_note: "Média da conta: consulta a cada 1 minuto".into(),
         local_refresh_note: "Tokens deste PC: leitura a cada 5 segundos".into(),
         install_update: "Instalar a nova versão".into(),
@@ -151,8 +151,8 @@ fn portuguese_strings() -> LocaleStrings {
         remaining_word: "disponíveis".into(),
         reset_prefix: "Cota renova em".into(),
         tokens_prefix: "Tokens registrados neste PC".into(),
-        budget_prefix: "Para durar até a renovação".into(),
-        pace_prefix: "Ritmo de uso".into(),
+        budget_prefix: "Para durar até renovar a cota semanal".into(),
+        pace_prefix: "Projeção semanal".into(),
         tokens_today_prefix: "Hoje neste PC".into(),
         session_window: "5h".into(),
         weekly_window: "7d".into(),

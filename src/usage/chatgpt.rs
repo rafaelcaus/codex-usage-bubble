@@ -97,6 +97,8 @@ fn window_from(w: ApiWindow) -> Window {
     Window {
         utilization: w.used_percent.clamp(0.0, 100.0),
         resets_at: unix_to_systemtime(Some(w.reset_at)),
+        duration_secs: w.limit_window_seconds.filter(|n| *n > 0),
+        reported: true,
     }
 }
 
@@ -159,6 +161,7 @@ struct RateLimit {
 struct ApiWindow {
     used_percent: f64,
     reset_at: i64,
+    limit_window_seconds: Option<u64>,
 }
 
 // Helpers used to make `Option<Option<Box<…>>>` flatten cleanly. We can't
@@ -166,6 +169,46 @@ struct ApiWindow {
 // `Option<Box<T>>`) would shadow this trait method.
 trait FlattenBoxed<T> {
     fn flatten_box(self) -> Option<T>;
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+    fn parse(value:serde_json::Value)->UsageWindows {
+        envelope_to_windows(serde_json::from_value(value).unwrap()).unwrap()
+    }
+    #[test]
+    fn single_weekly_limit_is_not_duplicated_or_guessed_as_five_hours() {
+        let w=parse(serde_json::json!({"rate_limit":{
+            "primary_window":{"used_percent":40,"reset_at":2000000000_i64,"limit_window_seconds":604800},
+            "secondary_window":null}}));
+        let shown=w.displayed();
+        assert_eq!(shown.len(),1);assert_eq!(shown[0].label(),"7d");
+        assert_eq!(shown[0].utilization,40.0);assert!(w.weekly().is_some());
+    }
+    #[test]
+    fn plus_limits_keep_independent_percentages_and_resets_even_if_slots_swap() {
+        for swapped in [false,true] {
+            let short=serde_json::json!({"used_percent":20,"reset_at":1900000000_i64,"limit_window_seconds":18000});
+            let long=serde_json::json!({"used_percent":80,"reset_at":2000000000_i64,"limit_window_seconds":604800});
+            let w=parse(serde_json::json!({"rate_limit":{
+                "primary_window":if swapped{&long}else{&short},"secondary_window":if swapped{&short}else{&long}}}));
+            let shown=w.displayed();assert_eq!(shown.len(),2);
+            assert_eq!(shown[0].label(),"5h");assert_eq!(shown[0].utilization,20.0);
+            assert_eq!(shown[0].resets_at,unix_to_systemtime(Some(1900000000)));
+            assert_eq!(shown[1].label(),"7d");assert_eq!(shown[1].utilization,80.0);
+            assert_eq!(shown[1].resets_at,unix_to_systemtime(Some(2000000000)));
+            assert_eq!(w.pressure(),Some(80.0));assert_eq!(w.weekly().unwrap().utilization,80.0);
+        }
+    }
+    #[test]
+    fn absent_is_not_free_quota_and_unknown_duration_is_not_inferred_from_reset() {
+        let empty=parse(serde_json::json!({"rate_limit":{"primary_window":null,"secondary_window":null}}));
+        assert!(empty.displayed().is_empty());assert_eq!(empty.pressure(),None);
+        let unknown=parse(serde_json::json!({"rate_limit":{"primary_window":{"used_percent":0,"reset_at":2000000000_i64}}}));
+        assert_eq!(unknown.displayed()[0].label(),"Cota");assert_eq!(unknown.pressure(),Some(0.0));
+        assert!(unknown.weekly().is_none());
+    }
 }
 impl<T> FlattenBoxed<T> for Option<Option<Box<T>>> {
     fn flatten_box(self) -> Option<T> {

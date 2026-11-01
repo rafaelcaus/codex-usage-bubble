@@ -379,6 +379,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         today_text: String::new(),
         today_title: String::new(),
         average_text: String::new(),
+        quota_label:"Cota".into(),secondary_label:String::new(),quota_duration_secs:None,
         is_dark,
     });
     if hwnd != HWND::default() {
@@ -569,10 +570,9 @@ fn apply_results(
             match outcome {
                 Ok(windows) => {
                     let entry = state.snapshots.entry(id).or_default();
-                    // Fork: thresholds watch the PRIMARY window, which IS the
-                    // weekly quota on the Pro plan (verified vs desktop app).
-                    let old_pct = entry.windows.primary.utilization;
-                    let new_pct = windows.primary.utilization;
+                    // Warn when either reported quota approaches its limit.
+                    let old_pct = entry.windows.pressure().unwrap_or(0.0);
+                    let new_pct = windows.pressure().unwrap_or(0.0);
                     // Fire a balloon only the cycle a provider CROSSES a
                     // threshold so the user is nudged once, not on every
                     // subsequent poll while parked above it.
@@ -584,7 +584,7 @@ fn apply_results(
                     entry.windows = windows;
                     // Fork: feed the burn-rate sampler (Codex weekly only).
                     if id == ProviderId::ChatGpt {
-                        crate::samples::record(entry.windows.primary.utilization);
+                        if let Some(weekly)=entry.windows.weekly() { crate::samples::record(weekly.utilization); }
                     }
                     entry.primary_text =
                         i18n::format_window_remaining(&windows.primary, &strings);
@@ -596,12 +596,14 @@ fn apply_results(
                 Err(usage::Error::AuthRequired | usage::Error::TokenExpired) => {
                     auth_failures.push(id);
                     let entry = state.snapshots.entry(id).or_default();
+                    entry.windows = UsageWindows::default();
                     entry.primary_text = "!".into();
                     entry.secondary_text = "!".into();
                 }
                 Err(e) => {
                     log::warn!("provider {id:?} poll failed: {e}");
                     let entry = state.snapshots.entry(id).or_default();
+                    entry.windows = UsageWindows::default();
                     entry.primary_text = "…".into();
                     entry.secondary_text = "…".into();
                 }
@@ -640,8 +642,12 @@ fn attempt_refresh(failures: Vec<ProviderId>, registry: &Arc<Mutex<Registry>>) {
 
 /// UI formatting only: local disk scans and account reads run on workers.
 fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &LocaleStrings) {
-    // Fork: boundaries use the PRIMARY window = weekly quota on Pro.
-    let cd = i18n::format_precise_countdown(entry.windows.primary.resets_at, strings);
+    let displayed=entry.windows.displayed();
+    let first=displayed.first().copied();
+    let weekly=entry.windows.weekly();
+    entry.primary_text=first.map(|w|i18n::format_window_remaining(&w,strings)).unwrap_or_else(||"Cota indisponível".into());
+    entry.secondary_text=displayed.get(1).map(|w|i18n::format_window_remaining(w,strings)).unwrap_or_default();
+    let cd = i18n::format_precise_countdown(first.and_then(|w|w.resets_at), strings);
     entry.reset_text = if cd.is_empty() {
         format!("{}: -", strings.reset_prefix)
     } else {
@@ -650,12 +656,12 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     entry.tokens_text.clear();
 
     // Daily budget: remaining % spread over the exact days left.
-    entry.budget_text = match entry.windows.primary.resets_at
+    entry.budget_text = match weekly.and_then(|w|w.resets_at)
         .and_then(|r| r.duration_since(SystemTime::now()).ok())
         .map(|d| d.as_secs_f64() / 86_400.0)
     {
         Some(days) if days > 0.0 => {
-            let used = entry.windows.primary.utilization.clamp(0.0, 100.0);
+            let used = weekly.map(|w|w.utilization).unwrap_or(0.0).clamp(0.0, 100.0);
             format!(
                 "{}: ~{}%/dia",
                 strings.budget_prefix,
@@ -666,7 +672,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     };
 
     // Burn-rate projection from recent samples.
-    let remaining = (100.0 - entry.windows.primary.utilization).clamp(0.0, 100.0);
+    let remaining = (100.0 - weekly.map(|w|w.utilization).unwrap_or(100.0)).clamp(0.0, 100.0);
     entry.pace_text = match crate::samples::project(remaining) {
         crate::samples::Pace::Collecting => {
             format!("{}: coletando dados...", strings.pace_prefix)
@@ -690,6 +696,8 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     };
 
+    if weekly.is_none() { entry.budget_text.clear(); entry.pace_text.clear(); }
+    if id != ProviderId::ChatGpt { entry.pace_text.clear(); }
     if id == ProviderId::ChatGpt {
         let today = chrono::Local::now().date_naive();
         let local = crate::local_usage::latest();
@@ -757,25 +765,17 @@ fn propagate_to_ui() {
 
     for (kind, hwnd) in snap.bubbles.iter() {
         let entry = snap.snapshots.get(kind);
-        // Fork (Rafael): on the Pro plan the PRIMARY window IS the weekly
-        // quota (verified against the desktop app: 3% used = 97% left).
-        // The bubble shows primary only; the unused secondary slot is fed
-        // the same values so every consumer stays consistent.
-        let session_pct = entry.map(|s| s.windows.primary.utilization);
-        let weekly_pct = entry.map(|s| s.windows.primary.utilization);
-        // The bubble paints the percent inline inside the ring/bar fill, so
-        // the caption only needs the PRECISE countdown ("6d 3h").
-        // The panel shows the combined "X% usada · Y% resta · Zh" strings.
-        let session_text = entry
-            .map(|s| {
-                i18n::format_precise_countdown(s.windows.primary.resets_at, &snap.i18n_strings)
-            })
-            .unwrap_or_default();
-        let weekly_text = entry
-            .map(|s| i18n::format_countdown(s.windows.primary.resets_at, &snap.i18n_strings))
-            .unwrap_or_default();
-        let session_resets_at = entry.and_then(|s| s.windows.primary.resets_at);
-        let weekly_resets_at = entry.and_then(|s| s.windows.primary.resets_at);
+        let windows=entry.map(|e|e.windows.displayed()).unwrap_or_default();
+        let first=windows.first();let second=windows.get(1);
+        let session_pct=first.map(|w|w.utilization);
+        let weekly_pct=second.map(|w|w.utilization);
+        let session_text=first.map(|w|i18n::format_precise_countdown(w.resets_at,&snap.i18n_strings)).unwrap_or_default();
+        let weekly_text=second.map(|w|i18n::format_precise_countdown(w.resets_at,&snap.i18n_strings)).unwrap_or_default();
+        let session_resets_at=first.and_then(|w|w.resets_at);
+        let weekly_resets_at=second.and_then(|w|w.resets_at);
+        let first_label=first.map(|w|w.label()).unwrap_or_else(||"Cota".into());
+        let second_label=second.map(|w|w.label()).unwrap_or_default();
+        let duration_secs=first.and_then(|w|w.duration_secs);
         log::info!(
             "bubble data: pct={session_pct:?} countdown='{session_text}' weekly_reset={weekly_resets_at:?}"
         );
@@ -805,6 +805,7 @@ fn propagate_to_ui() {
                 .map(|s| s.today_title.clone())
                 .unwrap_or_default(),
             entry.map(|s| s.average_micro.clone()).unwrap_or_default(),
+            first_label, second_label, duration_secs,
         );
     }
     refresh_tray_icons_with(&snap);
@@ -837,14 +838,10 @@ fn build_panel_data(model: ProviderId) -> PanelData {
     };
     let strings = s.i18n.strings().clone();
     let provider_state = s.snapshots.get(&model).cloned().unwrap_or_default();
-    // Fork: the panel's single usage row shows the PRIMARY window, which IS
-    // the weekly quota on the Pro plan (label stays "7d").
+    // The panel renders every reported quota with its own duration and reset.
     PanelData {
         model,
-        session_pct: provider_state.windows.primary.utilization,
-        session_text: provider_state.primary_text.clone(),
-        weekly_pct: provider_state.windows.primary.utilization,
-        weekly_text: provider_state.primary_text.clone(),
+        windows: provider_state.windows,
         reset_text: provider_state.reset_text,
         tokens_text: provider_state.tokens_text,
         budget_text: provider_state.budget_text,
@@ -858,10 +855,7 @@ fn build_panel_data(model: ProviderId) -> PanelData {
 fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiState) -> PanelData {
     PanelData {
         model,
-        session_pct: p.windows.primary.utilization,
-        session_text: p.primary_text.clone(),
-        weekly_pct: p.windows.primary.utilization,
-        weekly_text: p.primary_text.clone(),
+        windows: p.windows,
         reset_text: p.reset_text.clone(),
         tokens_text: p.tokens_text.clone(),
         budget_text: p.budget_text.clone(),
@@ -876,10 +870,7 @@ fn placeholder_panel(model: ProviderId) -> PanelData {
     let strings = i18n::I18n::load().strings().clone();
     PanelData {
         model,
-        session_pct: 0.0,
-        session_text: String::new(),
-        weekly_pct: 0.0,
-        weekly_text: String::new(),
+        windows: UsageWindows::default(),
         reset_text: String::new(),
         tokens_text: String::new(),
         budget_text: String::new(),
@@ -938,8 +929,8 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
         icons.push(TrayIconData {
             kind: provider,
             percent: if snap.last_poll_ok {
-                // Fork: tray badge tracks the PRIMARY window = weekly quota.
-                entry.map(|e| e.windows.primary.utilization)
+                // The tray tracks the highest used percentage among reported quotas.
+                entry.and_then(|e| e.windows.pressure())
             } else {
                 None
             },
@@ -954,7 +945,7 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
 }
 
 fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleStrings) -> String {
-    let quota = entry.map(|e| e.primary_text.as_str()).filter(|s| !s.is_empty()).unwrap_or("Consultando a cota…");
+    let quota = entry.map(|e| e.windows.displayed().into_iter().map(|w|format!("{}: {:.0}% restantes",w.label(),100.0-w.utilization)).collect::<Vec<_>>().join(" · ")).filter(|s|!s.is_empty()).unwrap_or_else(||"Consultando a cota…".into());
     let local = entry.map(|e| e.tokens_today_text.as_str()).filter(|s| !s.is_empty()).unwrap_or("Consumo local: aguardando leitura");
     format!("{label}\n{quota}\n{local}\n{}", strings.tray_left_click)
 }

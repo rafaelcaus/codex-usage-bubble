@@ -15,6 +15,8 @@ use crate::usage::{UsageWindows, Window};
 pub fn parse_anthropic(response: &Response) -> UsageWindows {
     UsageWindows {
         primary: Window {
+            duration_secs: Some(18000),
+            reported: response.header("anthropic-ratelimit-unified-5h-utilization").is_some(),
             utilization: (header_f64(response, "anthropic-ratelimit-unified-5h-utilization")
                 * 100.0)
                 .clamp(0.0, 100.0),
@@ -24,6 +26,8 @@ pub fn parse_anthropic(response: &Response) -> UsageWindows {
             )),
         },
         secondary: Window {
+            duration_secs: Some(604800),
+            reported: response.header("anthropic-ratelimit-unified-7d-utilization").is_some(),
             utilization: (header_f64(response, "anthropic-ratelimit-unified-7d-utilization")
                 * 100.0)
                 .clamp(0.0, 100.0),

@@ -3,7 +3,7 @@
 
 # Claude Code Usage Bubble
 
-> **Fork pessoal (Codex plano Pro, cota semanal)** — ver [FORK.md](FORK.md)
+> **Fork pessoal (Codex: limites informados pela conta)** — ver [FORK.md](FORK.md)
 > para a lista de mudancas. Upstream:
 > https://github.com/tiennm99/claude-code-usage-bubble (Apache-2.0).
 
@@ -19,6 +19,20 @@
 A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
+
+## Limites da conta (v0.6.9)
+
+O widget identifica a duracao de cada limite na resposta da conta. Quando
+existem janelas de 5 horas e 7 dias, mostra as duas porcentagens restantes
+e os dois prazos de renovacao, no widget e no painel. Quando a conta informa
+somente o semanal, mostra uma unica janela, sem duplicacao.
+
+A regra depende dos limites retornados, nao do nome do plano. Uma janela
+ausente nao aparece como 100% livre; uma duracao desconhecida nao e rotulada
+como 5 horas ou 7 dias por suposicao. O icone perto do relogio e os avisos
+consideram a maior porcentagem usada entre as janelas. A projecao semanal
+usa apenas a janela identificada como sete dias; seu historico de amostras
+comeca novamente nesta versao para nao misturar a antiga leitura de 5 horas.
 
 ## Contadores do fork (v0.6.7)
 

@@ -72,6 +72,21 @@ pub struct ProviderMetadata {
 pub struct Window {
     pub utilization: f64,
     pub resets_at: Option<SystemTime>,
+    pub duration_secs: Option<u64>,
+    pub reported: bool,
+}
+
+impl Window {
+    pub fn label(&self) -> String {
+        match self.duration_secs {
+            Some(604800) => "7d".into(),
+            Some(18000) => "5h".into(),
+            Some(n) if n > 0 && n % 86400 == 0 => format!("{}d",n/86400),
+            Some(n) if n > 0 && n % 3600 == 0 => format!("{}h",n/3600),
+            Some(n) if n > 0 && n % 60 == 0 => format!("{}min",n/60),
+            _ => "Cota".into(),
+        }
+    }
 }
 
 /// The pair of windows a provider reports per poll.
@@ -79,6 +94,20 @@ pub struct Window {
 pub struct UsageWindows {
     pub primary: Window,
     pub secondary: Window,
+}
+
+impl UsageWindows {
+    pub fn displayed(&self) -> Vec<Window> {
+        let mut windows:Vec<_> = [self.primary,self.secondary].into_iter().filter(|w|w.reported).collect();
+        windows.sort_by_key(|w|w.duration_secs.unwrap_or(u64::MAX));
+        windows
+    }
+    pub fn weekly(&self) -> Option<Window> {
+        [self.primary,self.secondary].into_iter().find(|w|w.reported && w.duration_secs==Some(604800))
+    }
+    pub fn pressure(&self) -> Option<f64> {
+        self.displayed().into_iter().map(|w|w.utilization).reduce(f64::max)
+    }
 }
 
 /// One provider's most recent poll result, keyed by `id`.
