@@ -20,6 +20,19 @@ A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
 
+## Atualização automática (v0.6.10)
+
+Em **Atualizações do programa**, **Buscar nova atualização (vX.Y.Z)** procura,
+baixa, valida e instala uma versão nova sem pedir outro clique. O widget
+reinicia atualizado e conserva suas preferências. O mesmo fluxo é usado
+nos horários configurados em **Atualização automática**. **Somente ao buscar
+pelo menu** desativa a programação, mantendo a atualização pela busca manual.
+
+É necessário instalar a v0.6.10 uma vez para ativar esse comportamento;
+versões anteriores ainda usam o fluxo antigo de dois cliques. Uma consulta
+sem novidade não reinstala o programa. Em caso de falha, o menu informa o
+problema e permite tentar novamente.
+
 ## Limites da conta (v0.6.9)
 
 O widget identifica a duracao de cada limite na resposta da conta. Quando

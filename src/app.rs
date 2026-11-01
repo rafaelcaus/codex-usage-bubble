@@ -71,7 +71,6 @@ const IDM_MODEL_OPENCODE_GO: u16 = 22;
 const IDM_START_WITH_WINDOWS: u16 = 30;
 const IDM_RESET_POSITION: u16 = 31;
 const IDM_VERSION_ACTION: u16 = 32;
-const IDM_INSTALL_UPDATE: u16 = 38;
 const IDM_HELP: u16 = 39;
 const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
@@ -105,7 +104,6 @@ enum UpdateStatus {
     Idle,
     Checking,
     UpToDate,
-    Available,
     Applying,
     Failed,
 }
@@ -127,7 +125,6 @@ struct AppState {
     snapshots: HashMap<ProviderId, ProviderUiState>,
     last_poll_ok: bool,
     update_status: UpdateStatus,
-    update_release: Option<update::Release>,
     last_balloon_at: Option<Instant>,
 }
 
@@ -258,7 +255,6 @@ pub fn run(args: crate::AppArgs) {
         snapshots: HashMap::new(),
         last_poll_ok: false,
         update_status: UpdateStatus::Idle,
-        update_release: None,
         last_balloon_at: None,
     });
 
@@ -403,6 +399,9 @@ unsafe extern "system" fn msg_wnd_proc(
             LRESULT(0)
         }
         WM_APP_UPDATE_APPLIED => {
+            // Persist the most recent UI preferences before the successor starts.
+            let latest=lock_state().as_ref().map(|s|s.settings.clone());
+            if let Some(settings)=latest { settings::save(&settings); }
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -459,7 +458,6 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_ONLY_CHATGPT => toggle_only_over_chatgpt(),
         IDM_RESET_POSITION => reset_positions(),
         IDM_VERSION_ACTION => check_updates_now(),
-        IDM_INSTALL_UPDATE => version_action(),
         IDM_HELP => show_help(_owner_hwnd),
         IDM_SIZE_SMALLER => resize_bubbles(-bubble::RESIZE_STEP_LOGICAL),
         IDM_SIZE_LARGER => resize_bubbles(bubble::RESIZE_STEP_LOGICAL),
@@ -488,7 +486,9 @@ fn on_timer(hwnd: HWND, id: usize) {
             unsafe {
                 let _ = KillTimer(hwnd, TIMER_UPDATE_CHECK);
             }
-            begin_update_check(hwnd);
+            // Re-read the current schedule: a stale timer must not update
+            // after the user disabled or postponed automatic checks.
+            schedule_update_check_timer(hwnd);
         }
         _ => {}
     }
@@ -1095,7 +1095,6 @@ struct ContextMenuSnapshot {
     install_channel: InstallChannel,
     update_status: UpdateStatus,
     bubble_size_logical: i32,
-    available_version: Option<String>,
 }
 
 /// Owns the entire native menu tree, including on construction failures.
@@ -1163,16 +1162,10 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
     let busy = matches!(snap.update_status, UpdateStatus::Checking | UpdateStatus::Applying);
     append_item(updates, IDM_VERSION_ACTION, &version_action_label(snap),
         if busy { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
-    if matches!(snap.update_status, UpdateStatus::Available) {
-        let label = snap.available_version.as_ref()
-            .map(|v| format!("{} ({v})",text.install_update)).unwrap_or_else(|| text.install_update.clone());
-        append_item(updates, IDM_INSTALL_UPDATE, &label, MENU_ITEM_FLAGS(0));
-    }
     let status = match snap.update_status {
         UpdateStatus::Idle => None,
         UpdateStatus::Checking => Some(&text.checking_for_updates),
         UpdateStatus::UpToDate => Some(&text.up_to_date),
-        UpdateStatus::Available => Some(&text.update_available),
         UpdateStatus::Applying => Some(&text.applying_update),
         UpdateStatus::Failed => Some(&text.update_failed),
     };
@@ -1202,7 +1195,6 @@ fn show_context_menu(owner_hwnd: HWND) {
             show_opencode_go:s.settings.show_opencode_go,widget_visible:s.settings.widget_visible,
             only_over_chatgpt:s.settings.only_over_chatgpt,install_channel:s.install_channel,
             update_status:s.update_status,bubble_size_logical:s.settings.bubble_size_logical,
-            available_version:s.update_release.as_ref().map(|r| format!("v{}.{}.{}",r.version.major,r.version.minor,r.version.patch)),
         },
         None => return,
     };
@@ -1391,62 +1383,84 @@ fn set_bubble_size(size_logical: i32) {
     }
 }
 
-fn version_action() {
-    enum Act {
-        Apply(update::Release, InstallChannel),
-        Check(SendHwnd),
-    }
-    let act = match lock_state().as_ref() {
-        Some(s) => match (s.update_status, s.update_release.as_ref()) {
-            (UpdateStatus::Available, Some(r)) => Act::Apply(r.clone(), s.install_channel),
-            _ => Act::Check(s.msg_hwnd),
-        },
-        None => return,
-    };
-    match act {
-        Act::Apply(release, channel) => {
-            // Set the Applying status synchronously so the menu reflects
-            // it immediately, then move the (potentially several-second)
-            // download to a worker thread. Holding the UI thread here
-            // would freeze paints and menus until the download finished.
-            let (http, msg_hwnd) = {
-                let mut guard = lock_state();
-                let Some(s) = guard.as_mut() else {
-                    return;
-                };
-                s.update_status = UpdateStatus::Applying;
-                (s.http.clone(), s.msg_hwnd)
-            };
-            std::thread::spawn(move || {
-                let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = match channel {
-                    InstallChannel::Winget => {
-                        // Winget channel is reserved for future use; until a
-                        // winget package ships, this branch is unreachable.
-                        Err("winget channel not supported yet".into())
-                    }
-                    InstallChannel::Portable => {
-                        update::install::begin(&http, &release).map_err(|e| e.into())
-                    }
-                };
-                match result {
-                    Ok(()) => unsafe {
-                        let _ = PostMessageW(
-                            msg_hwnd.to_hwnd(),
-                            WM_APP_UPDATE_APPLIED,
-                            WPARAM(0),
-                            LPARAM(0),
-                        );
-                    },
-                    Err(e) => {
-                        log::error!("update apply failed: {e}");
-                        if let Some(s) = lock_state().as_mut() {
-                            s.update_status = UpdateStatus::Failed;
-                        }
-                    }
-                }
-            });
+/// Claim the full check/install cycle before spawning any worker. Both the
+/// timer and the menu go through this gate; downloading/installing owns it too.
+fn claim_update_cycle(status: &mut UpdateStatus) -> bool {
+    if matches!(status,UpdateStatus::Checking|UpdateStatus::Applying) { return false; }
+    *status=UpdateStatus::Checking;
+    true
+}
+
+/// One pipeline for both triggers. There is no pending-confirmation state.
+/// Installer injection allows tests to exercise the automatic transition
+/// without replacing a real user installation.
+fn automatic_update_flow(
+    result:Result<CheckOutcome,update::Error>,
+    mut status:impl FnMut(UpdateStatus),
+    install:impl FnOnce(&update::Release)->Result<(),update::Error>,
+)->Result<bool,update::Error> {
+    match result {
+        Ok(CheckOutcome::UpToDate)=> { status(UpdateStatus::UpToDate); Ok(false) }
+        Ok(CheckOutcome::Available(release))=> {
+            status(UpdateStatus::Applying);
+            match install(&release) {
+                Ok(())=>Ok(true),
+                Err(e)=>{status(UpdateStatus::Failed);Err(e)}
+            }
         }
-        Act::Check(hwnd) => begin_update_check(hwnd.to_hwnd()),
+        Err(e)=>{status(UpdateStatus::Failed);Err(e)}
+    }
+}
+
+#[cfg(test)]
+mod automatic_update_tests {
+    use super::*;
+    use std::cell::RefCell;
+    fn release()->update::Release {
+        update::Release {
+            version:update::release::Version {major:9,minor:0,patch:0},
+            asset_url:"https://example.invalid/fixture.exe".into(),asset_sha256:Some([7;32]),
+        }
+    }
+    #[test]
+    fn detecting_a_release_installs_it_without_a_second_action() {
+        // The menu and timer both invoke the same claimed cycle.
+        for _trigger in ["menu","timer"] {
+            let mut status=UpdateStatus::Idle;
+            assert!(claim_update_cycle(&mut status));
+            assert!(!claim_update_cycle(&mut status));
+            let events=RefCell::new(Vec::new());
+            let installed=automatic_update_flow(Ok(CheckOutcome::Available(release())),
+                |next| { assert_eq!(next,UpdateStatus::Applying);events.borrow_mut().push("installing"); },
+                |r| {
+                    assert_eq!(r.version,release().version);assert_eq!(r.asset_sha256,Some([7;32]));
+                    events.borrow_mut().push("installed");Ok(())
+                }).unwrap();
+            assert!(installed);assert_eq!(*events.borrow(),["installing","installed"]);
+        }
+    }
+    #[test]
+    fn current_or_failed_checks_never_invoke_the_installer() {
+        let state=RefCell::new(UpdateStatus::Checking);
+        assert!(!automatic_update_flow(Ok(CheckOutcome::UpToDate),|s|*state.borrow_mut()=s,
+            |_|panic!("must not install the current version")).unwrap());
+        assert_eq!(*state.borrow(),UpdateStatus::UpToDate);
+        assert!(automatic_update_flow(Err(update::Error::NoAsset),|s|*state.borrow_mut()=s,
+            |_|panic!("must not install after a failed check")).is_err());
+        assert_eq!(*state.borrow(),UpdateStatus::Failed);
+    }
+    #[test]
+    fn install_failure_releases_the_cycle_for_a_retry() {
+        let state=RefCell::new(UpdateStatus::Checking);
+        let result=automatic_update_flow(Ok(CheckOutcome::Available(release())),
+            |s|*state.borrow_mut()=s, |_| {
+                assert_eq!(*state.borrow(),UpdateStatus::Applying);
+                assert!(!claim_update_cycle(&mut state.borrow_mut()));
+                Err(update::Error::ChecksumMismatch {expected:"fixture".into(),actual:"different".into()})
+            });
+        assert!(result.is_err());assert_eq!(*state.borrow(),UpdateStatus::Failed);
+        assert!(claim_update_cycle(&mut state.borrow_mut()));
+        assert_eq!(*state.borrow(),UpdateStatus::Checking);
     }
 }
 
@@ -1480,47 +1494,42 @@ fn schedule_update_check_timer(hwnd: HWND) {
 }
 
 fn begin_update_check(hwnd: HWND) {
-    if let Some(s) = lock_state().as_mut() {
-        s.update_status = UpdateStatus::Checking;
-    }
-    let send_hwnd = SendHwnd::from_hwnd(hwnd);
+    let (http,channel)= {
+        let mut guard=lock_state();
+        let Some(s)=guard.as_mut() else { return };
+        if !claim_update_cycle(&mut s.update_status) { return; }
+        (s.http.clone(),s.install_channel)
+    };
+    let send_hwnd=SendHwnd::from_hwnd(hwnd);
     std::thread::spawn(move || {
-        let result = match net::Client::new(HTTP_USER_AGENT) {
-            Ok(c) => update::release::fetch_latest(&c),
-            Err(e) => Err(update::Error::Network(e)),
-        };
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let snap_opt = {
-            let mut s = lock_state();
-            s.as_mut().map(|s| {
-                s.settings.last_update_check_unix = Some(now);
-                match result {
-                    Ok(CheckOutcome::UpToDate) => {
-                        s.update_status = UpdateStatus::UpToDate;
-                        s.update_release = None;
-                    }
-                    Ok(CheckOutcome::Available(r)) => {
-                        s.update_status = UpdateStatus::Available;
-                        s.update_release = Some(r);
-                    }
-                    Err(_) => {
-                        s.update_status = UpdateStatus::Failed;
-                    }
+        let result=update::release::fetch_latest(&http);
+        let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let settings=lock_state().as_mut().map(|s| {
+            s.settings.last_update_check_unix=Some(now);
+            s.settings.clone()
+        });
+        if let Some(ref settings)=settings { settings::save(settings); }
+        let installed=automatic_update_flow(result,
+            |status| { if let Some(s)=lock_state().as_mut() { s.update_status=status; } },
+            |release|match channel {
+                InstallChannel::Portable=>update::install::begin(&http,release),
+                InstallChannel::Winget=>Err(update::Error::NotWritable("Atualização por WinGet ainda indisponível".into())),
+            });
+        match installed {
+            Ok(true)=>unsafe {
+                // The verified replacement already launched its successor.
+                // Quit this process so the child can acquire the widget mutex.
+                let _=PostMessageW(send_hwnd.to_hwnd(),WM_APP_UPDATE_APPLIED,WPARAM(0),LPARAM(0));
+            },
+            outcome=> {
+                if let Err(e)=outcome { log::error!("automatic update failed: {e}"); }
+                // A user can change/disable the schedule while downloading.
+                // Use the current setting, not a stale copy from the check.
+                let interval=lock_state().as_ref().and_then(|s|s.settings.update_check_interval_secs);
+                if let Some(interval)=interval {
+                    let ms=(interval.saturating_mul(1000).min(u32::MAX as u64)) as u32;
+                    unsafe { SetTimer(send_hwnd.to_hwnd(),TIMER_UPDATE_CHECK,ms,None); }
                 }
-                (s.settings.clone(), s.settings.update_check_interval_secs)
-            })
-        };
-        let next_interval = snap_opt.as_ref().and_then(|(_, iv)| *iv);
-        if let Some((snap, _)) = snap_opt {
-            settings::save(&snap);
-        }
-        if let Some(interval) = next_interval {
-            let ms = (interval.saturating_mul(1000).min(u32::MAX as u64)) as u32;
-            unsafe {
-                SetTimer(send_hwnd.to_hwnd(), TIMER_UPDATE_CHECK, ms, None);
             }
         }
     });
@@ -1623,14 +1632,13 @@ mod context_menu_tests {
             show_claude:false,show_chatgpt:true,show_opencode_go:false,widget_visible:true,
             only_over_chatgpt:true,install_channel:InstallChannel::Portable,
             update_status:status,bubble_size_logical:bubble::DEFAULT_BUBBLE_SIZE,
-            available_version:Some("v9.0.0".into()),
         }
     }
     #[test]
-    fn every_menu_state_preserves_actions_and_separates_search_from_install() {
+    fn every_menu_state_preserves_actions_without_an_extra_install_button() {
         let mut report=String::new();
         for status in [UpdateStatus::Idle,UpdateStatus::Checking,UpdateStatus::UpToDate,
-            UpdateStatus::Available,UpdateStatus::Applying,UpdateStatus::Failed] {
+            UpdateStatus::Applying,UpdateStatus::Failed] {
             let snap=snapshot(status);
             let menu=build_context_menu(&snap,true).unwrap();
             let mut items=Vec::new();inventory(menu.0,"",&mut items);
@@ -1645,7 +1653,7 @@ mod context_menu_tests {
             assert!(search.path.ends_with(&format!("Buscar nova atualização (v{})",env!("CARGO_PKG_VERSION"))));
             let busy=matches!(status,UpdateStatus::Checking|UpdateStatus::Applying);
             assert_eq!(search.flags & MF_GRAYED.0 != 0,busy);
-            assert_eq!(ids.contains(&IDM_INSTALL_UPDATE),status==UpdateStatus::Available);
+            assert!(!ids.contains(&38),"the former extra installation action must not be required");
             for id in [IDM_MODEL_CHATGPT,IDM_FREQ_5MIN,IDM_UPDATE_AUTO_DAILY,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET,IDM_ONLY_CHATGPT] {
                 assert!(items.iter().find(|e|e.id==id).unwrap().flags & MF_CHECKED.0 != 0);
             }
