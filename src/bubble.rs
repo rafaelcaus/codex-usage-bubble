@@ -2337,7 +2337,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
             draw_value_line(hdc, &font_name, layout.main_font_px + 3,
                 COLORREF(0x00FFFFFF), &layout.average_value_rect, &inputs.average_text);
             draw_title_line(hdc,&font_name,small_font,muted_color,&layout.credits_title_rect,&inputs.credits_title);
-            draw_value_line(hdc,&font_name,layout.main_font_px+3,COLORREF(0x00FFFFFF),&layout.credits_value_rect,&inputs.credits_text);
+            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.credits_value_rect,&inputs.credits_text);
         }
 
 
