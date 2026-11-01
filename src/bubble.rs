@@ -201,7 +201,7 @@ pub fn create(config: BubbleConfig) -> HWND {
         .unwrap_or_else(|| default_position(width_px, height_px, config.model));
     let hwnd = unsafe {
         let class_w = wide_str(CLASS_NAME);
-        let title_w = wide_str("Claude Code Usage Bubble");
+        let title_w = wide_str("Consumo de IA");
         let hinstance = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -2190,7 +2190,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
             small_font,
             muted_color,
             &layout.reset_title_rect,
-            "Tempo para reset:",
+            "Cota renova em:",
         );
         draw_value_line(
             hdc,
@@ -2219,7 +2219,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         );
         if inputs.model == ProviderId::ChatGpt {
             draw_title_line(hdc, &font_name, small_font, muted_color,
-                &layout.average_title_rect, "Media 7d da conta:");
+                &layout.average_title_rect, "Média 7d da conta:");
             draw_value_line(hdc, &font_name, layout.main_font_px + 3,
                 COLORREF(0x00FFFFFF), &layout.average_value_rect, &inputs.average_text);
         }

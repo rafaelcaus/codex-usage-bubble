@@ -71,6 +71,8 @@ const IDM_MODEL_OPENCODE_GO: u16 = 22;
 const IDM_START_WITH_WINDOWS: u16 = 30;
 const IDM_RESET_POSITION: u16 = 31;
 const IDM_VERSION_ACTION: u16 = 32;
+const IDM_INSTALL_UPDATE: u16 = 38;
+const IDM_HELP: u16 = 39;
 const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
@@ -318,7 +320,7 @@ pub fn run(args: crate::AppArgs) {
 
 fn create_message_window() -> Option<HWND> {
     let class_w = os::to_utf16_nul(APP_CLASS_NAME);
-    let title_w = os::to_utf16_nul("Claude Code Usage Bubble");
+    let title_w = os::to_utf16_nul("Consumo de IA");
     unsafe {
         let hinstance = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
         let wc = WNDCLASSEXW {
@@ -455,7 +457,9 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_START_WITH_WINDOWS => toggle_startup(),
         IDM_ONLY_CHATGPT => toggle_only_over_chatgpt(),
         IDM_RESET_POSITION => reset_positions(),
-        IDM_VERSION_ACTION => version_action(),
+        IDM_VERSION_ACTION => check_updates_now(),
+        IDM_INSTALL_UPDATE => version_action(),
+        IDM_HELP => show_help(_owner_hwnd),
         IDM_SIZE_SMALLER => resize_bubbles(-bubble::RESIZE_STEP_LOGICAL),
         IDM_SIZE_LARGER => resize_bubbles(bubble::RESIZE_STEP_LOGICAL),
         IDM_RESET_SIZE => set_bubble_size(bubble::DEFAULT_BUBBLE_SIZE),
@@ -667,7 +671,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         crate::samples::Pace::Collecting => {
             format!("{}: coletando dados...", strings.pace_prefix)
         }
-        crate::samples::Pace::Idle => format!("{}: parado", strings.pace_prefix),
+        crate::samples::Pace::Idle => format!("{}: sem consumo recente", strings.pace_prefix),
         crate::samples::Pace::Live {
             per_hour,
             hours_left,
@@ -678,7 +682,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
                 format!("~{}h", hours_left.round() as u64)
             };
             format!(
-                "{}: ~{}%/h -> acaba em {}",
+                "{}: ~{}%/h · cota acaba em {}",
                 strings.pace_prefix,
                 crate::samples::fmt_1(per_hour),
                 when
@@ -695,18 +699,18 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
             // Full integer: activity remains visible even below 0.1 million.
             entry.today_micro = format!("{} tokens", crate::codex_tokens::format_tokens(n));
         } else {
-            entry.today_micro = "Indisponivel".into();
-            entry.tokens_today_text = "Hoje neste PC: leitura indisponivel".into();
+            entry.today_micro = "Indisponível".into();
+            entry.tokens_today_text = "Hoje neste PC: leitura indisponível".into();
         }
         let api = crate::appserver::latest();
         let from = today - chrono::Duration::days(7);
         let to = today - chrono::Duration::days(1);
         if let Some(n) = api.average_previous_week(today) {
             entry.average_micro = format!("{} tokens/dia", crate::codex_tokens::format_tokens(n));
-            entry.tokens_text = format!("Media conta {}-{}: {}/dia", from.format("%d/%m"), to.format("%d/%m"), crate::codex_tokens::format_tokens(n));
+            entry.tokens_text = format!("Média da conta {}-{}: {}/dia", from.format("%d/%m"), to.format("%d/%m"), crate::codex_tokens::format_tokens(n));
         } else {
-            entry.average_micro = "Indisponivel".into();
-            entry.tokens_text = "Media 7d conta: historico incompleto ou indisponivel".into();
+            entry.average_micro = "Indisponível".into();
+            entry.tokens_text = "Média da conta (7 dias): dados incompletos".into();
         }
     } else {
         entry.today_micro.clear();
@@ -950,27 +954,9 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
 }
 
 fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleStrings) -> String {
-    // Fork: weekly-only tooltip with precise reset + local tokens.
-    let weekly = entry
-        .map(|e| e.secondary_text.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("...");
-    let reset = entry
-        .map(|e| e.reset_text.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("...");
-    let tokens = entry
-        .map(|e| e.tokens_text.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("...");
-    let budget = entry
-        .map(|e| e.budget_text.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("...");
-    format!(
-        "{label}\n{}: {weekly}\n{reset}\n{tokens}\n{budget}\n{}",
-        strings.weekly_window, strings.tray_left_click
-    )
+    let quota = entry.map(|e| e.primary_text.as_str()).filter(|s| !s.is_empty()).unwrap_or("Consultando a cota…");
+    let local = entry.map(|e| e.tokens_today_text.as_str()).filter(|s| !s.is_empty()).unwrap_or("Consumo local: aguardando leitura");
+    format!("{label}\n{quota}\n{local}\n{}", strings.tray_left_click)
 }
 
 fn provider_label(provider: ProviderId, strings: &LocaleStrings) -> String {
@@ -1038,7 +1024,7 @@ fn show_threshold_balloon(provider: ProviderId, threshold: u8) {
         s.last_balloon_at = Some(Instant::now());
         let strings = s.i18n.strings();
         let provider_label = provider_label(provider, strings);
-        let title = format!("{provider_label} · {threshold}%");
+        let title = format!("{provider_label}: {threshold}% da cota usados");
         let body = if threshold >= 95 {
             strings.threshold_95_body.clone()
         } else {
@@ -1072,8 +1058,8 @@ fn show_token_expired_balloon(failed: ProviderId) {
                 strings.chatgpt_token_expired_body.clone(),
             ),
             ProviderId::OpenCodeGo => (
-                strings.opencode_go_label.clone(),
-                strings.update_failed.clone(),
+                "OpenCode Go indisponível".into(),
+                "A consulta deste serviço ainda não está disponível.".into(),
             ),
         };
         (s.msg_hwnd, failed, title, body)
@@ -1118,236 +1104,138 @@ struct ContextMenuSnapshot {
     install_channel: InstallChannel,
     update_status: UpdateStatus,
     bubble_size_logical: i32,
+    available_version: Option<String>,
+}
+
+/// Owns the entire native menu tree, including on construction failures.
+struct PopupMenu(HMENU);
+impl Drop for PopupMenu {
+    fn drop(&mut self) { unsafe { let _ = DestroyMenu(self.0); } }
+}
+fn add_submenu(parent: HMENU, label: &str) -> Option<HMENU> {
+    let child = unsafe { CreatePopupMenu().ok()? };
+    let label = os::to_utf16_nul(label);
+    if unsafe { AppendMenuW(parent, MF_POPUP, child.0 as usize, PCWSTR(label.as_ptr())) }.is_err() {
+        unsafe { let _ = DestroyMenu(child); }
+        return None;
+    }
+    Some(child)
+}
+fn separator(menu: HMENU) {
+    unsafe { let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()); }
+}
+fn checked(value: bool) -> MENU_ITEM_FLAGS {
+    if value { MF_CHECKED } else { MENU_ITEM_FLAGS(0) }
+}
+
+/// Builds menus without reading settings, starting requests or displaying UI.
+/// All state is supplied explicitly so every submenu and update state can be audited.
+fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Option<PopupMenu> {
+    let menu = PopupMenu(unsafe { CreatePopupMenu().ok()? });
+    let root = menu.0;
+    let text = &snap.strings;
+    append_item(root, IDM_REFRESH, &text.refresh, MENU_ITEM_FLAGS(0));
+    append_item(root, tray::IDM_TOGGLE_WIDGET, &text.show_widget, checked(snap.widget_visible));
+    separator(root);
+
+    let display = add_submenu(root, &text.appearance)?;
+    append_item(display, IDM_ONLY_CHATGPT, &text.only_over_chatgpt, checked(snap.only_over_chatgpt));
+    separator(display);
+    append_item(display, IDM_SIZE_SMALLER, &text.size_smaller,
+        if snap.bubble_size_logical <= bubble::MIN_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
+    append_item(display, IDM_SIZE_LARGER, &text.size_larger,
+        if snap.bubble_size_logical >= bubble::MAX_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
+    append_item(display, IDM_RESET_SIZE, &text.reset_size,
+        if snap.bubble_size_logical == bubble::DEFAULT_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
+    append_item(display, IDM_RESET_POSITION, &text.reset_position, MENU_ITEM_FLAGS(0));
+
+    let providers = add_submenu(root, &text.providers)?;
+    append_item(providers, IDM_MODEL_CHATGPT, &text.chatgpt_label, checked(snap.show_chatgpt));
+    append_item(providers, IDM_MODEL_CLAUDE, &text.claude_label, checked(snap.show_claude));
+    append_item(providers, IDM_MODEL_OPENCODE_GO,
+        &format!("{} (indisponível)", text.opencode_go_label), MF_GRAYED | checked(snap.show_opencode_go));
+
+    let settings_menu = add_submenu(root, &text.settings)?;
+    append_item(settings_menu, IDM_START_WITH_WINDOWS, &text.start_with_windows, checked(startup_enabled));
+    let frequency = add_submenu(settings_menu, &text.update_frequency)?;
+    for (id, interval, label) in [
+        (IDM_FREQ_1MIN, POLL_1_MIN, &text.one_minute),
+        (IDM_FREQ_5MIN, POLL_5_MIN, &text.five_minutes),
+        (IDM_FREQ_15MIN, POLL_15_MIN, &text.fifteen_minutes),
+        (IDM_FREQ_1HOUR, POLL_1_HOUR, &text.one_hour),
+    ] { append_item(frequency, id, label, checked(interval == snap.current_interval)); }
+    separator(frequency);
+    append_item(frequency, 0, &text.local_refresh_note, MF_GRAYED);
+    append_item(frequency, 0, &text.history_refresh_note, MF_GRAYED);
+
+    let updates = add_submenu(root, &text.updates_menu)?;
+    let busy = matches!(snap.update_status, UpdateStatus::Checking | UpdateStatus::Applying);
+    append_item(updates, IDM_VERSION_ACTION, &version_action_label(snap),
+        if busy { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
+    if matches!(snap.update_status, UpdateStatus::Available) {
+        let label = snap.available_version.as_ref()
+            .map(|v| format!("{} ({v})",text.install_update)).unwrap_or_else(|| text.install_update.clone());
+        append_item(updates, IDM_INSTALL_UPDATE, &label, MENU_ITEM_FLAGS(0));
+    }
+    let status = match snap.update_status {
+        UpdateStatus::Idle => None,
+        UpdateStatus::Checking => Some(&text.checking_for_updates),
+        UpdateStatus::UpToDate => Some(&text.up_to_date),
+        UpdateStatus::Available => Some(&text.update_available),
+        UpdateStatus::Applying => Some(&text.applying_update),
+        UpdateStatus::Failed => Some(&text.update_failed),
+    };
+    if let Some(status) = status { append_item(updates, 0, status, MF_GRAYED); }
+    separator(updates);
+    let automatic = add_submenu(updates, &text.auto_update_check)?;
+    for (id, value, label) in [
+        (IDM_UPDATE_AUTO_OFF, None, &text.auto_check_disabled),
+        (IDM_UPDATE_AUTO_HOURLY, Some(settings::UPDATE_CHECK_HOURLY_SECS), &text.auto_check_hourly),
+        (IDM_UPDATE_AUTO_DAILY, Some(settings::UPDATE_CHECK_DAILY_SECS), &text.auto_check_daily),
+        (IDM_UPDATE_AUTO_WEEKLY, Some(settings::UPDATE_CHECK_WEEKLY_SECS), &text.auto_check_weekly),
+    ] { append_item(automatic, id, label, checked(value == snap.update_check_interval_secs)); }
+
+    append_item(root, IDM_HELP, &text.controls, MENU_ITEM_FLAGS(0));
+    separator(root);
+    append_item(root, IDM_RESTART, &text.restart, MENU_ITEM_FLAGS(0));
+    append_item(root, IDM_EXIT, &text.exit, MENU_ITEM_FLAGS(0));
+    Some(menu)
 }
 
 fn show_context_menu(owner_hwnd: HWND) {
     let snap = match lock_state().as_ref() {
         Some(s) => ContextMenuSnapshot {
-            strings: s.i18n.strings().clone(),
-            current_interval: s.settings.poll_interval_ms,
-            update_check_interval_secs: s.settings.update_check_interval_secs,
-            show_claude: s.settings.show_claude_code,
-            show_chatgpt: s.settings.show_codex,
-            show_opencode_go: s.settings.show_opencode_go,
-            widget_visible: s.settings.widget_visible,
-            only_over_chatgpt: s.settings.only_over_chatgpt,
-            install_channel: s.install_channel,
-            update_status: s.update_status,
-            bubble_size_logical: s.settings.bubble_size_logical,
+            strings:s.i18n.strings().clone(),current_interval:s.settings.poll_interval_ms,
+            update_check_interval_secs:s.settings.update_check_interval_secs,
+            show_claude:s.settings.show_claude_code,show_chatgpt:s.settings.show_codex,
+            show_opencode_go:s.settings.show_opencode_go,widget_visible:s.settings.widget_visible,
+            only_over_chatgpt:s.settings.only_over_chatgpt,install_channel:s.install_channel,
+            update_status:s.update_status,bubble_size_logical:s.settings.bubble_size_logical,
+            available_version:s.update_release.as_ref().map(|r| format!("v{}.{}.{}",r.version.major,r.version.minor,r.version.patch)),
         },
         None => return,
     };
-
+    let Some(menu) = build_context_menu(&snap,is_startup_enabled()) else { return };
     unsafe {
-        let menu = match CreatePopupMenu() {
-            Ok(m) => m,
-            Err(_) => return,
-        };
-
-        append_item(menu, IDM_REFRESH, &snap.strings.refresh, MENU_ITEM_FLAGS(0));
-
-        let Ok(freq) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(freq) failed");
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        for (id, interval, label) in [
-            (IDM_FREQ_1MIN, POLL_1_MIN, &snap.strings.one_minute),
-            (IDM_FREQ_5MIN, POLL_5_MIN, &snap.strings.five_minutes),
-            (IDM_FREQ_15MIN, POLL_15_MIN, &snap.strings.fifteen_minutes),
-            (IDM_FREQ_1HOUR, POLL_1_HOUR, &snap.strings.one_hour),
-        ] {
-            let flags = if interval == snap.current_interval {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            };
-            append_item(freq, id, label, flags);
-        }
-        append_submenu(menu, freq, &snap.strings.update_frequency);
-
-        let Ok(providers) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(providers) failed");
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        append_item(
-            providers,
-            IDM_MODEL_CLAUDE,
-            &snap.strings.claude_label,
-            if snap.show_claude {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            providers,
-            IDM_MODEL_CHATGPT,
-            &snap.strings.chatgpt_label,
-            if snap.show_chatgpt {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            providers,
-            IDM_MODEL_OPENCODE_GO,
-            &snap.strings.opencode_go_label,
-            if snap.show_opencode_go {
-                MF_CHECKED | MF_GRAYED
-            } else {
-                MF_GRAYED
-            },
-        );
-        append_submenu(menu, providers, &snap.strings.providers);
-
-        let Ok(settings_menu) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(settings_menu) failed");
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        append_item(
-            settings_menu,
-            IDM_START_WITH_WINDOWS,
-            &snap.strings.start_with_windows,
-            if is_startup_enabled() {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            settings_menu,
-            IDM_ONLY_CHATGPT,
-            &snap.strings.only_over_chatgpt,
-            if snap.only_over_chatgpt {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            settings_menu,
-            IDM_RESET_POSITION,
-            &snap.strings.reset_position,
-            MENU_ITEM_FLAGS(0),
-        );
-
-        let version_label = version_action_label(&snap);
-        let version_flags = if matches!(
-            snap.update_status,
-            UpdateStatus::Checking | UpdateStatus::Applying
-        ) {
-            MF_GRAYED
-        } else {
-            MENU_ITEM_FLAGS(0)
-        };
-        append_item(
-            settings_menu,
-            IDM_VERSION_ACTION,
-            &version_label,
-            version_flags,
-        );
-
-        let Ok(auto_update) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(auto_update) failed");
-            let _ = DestroyMenu(settings_menu);
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        for (id, value, label) in [
-            (IDM_UPDATE_AUTO_OFF, None, &snap.strings.auto_check_disabled),
-            (
-                IDM_UPDATE_AUTO_HOURLY,
-                Some(settings::UPDATE_CHECK_HOURLY_SECS),
-                &snap.strings.auto_check_hourly,
-            ),
-            (
-                IDM_UPDATE_AUTO_DAILY,
-                Some(settings::UPDATE_CHECK_DAILY_SECS),
-                &snap.strings.auto_check_daily,
-            ),
-            (
-                IDM_UPDATE_AUTO_WEEKLY,
-                Some(settings::UPDATE_CHECK_WEEKLY_SECS),
-                &snap.strings.auto_check_weekly,
-            ),
-        ] {
-            let flags = if value == snap.update_check_interval_secs {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            };
-            append_item(auto_update, id, label, flags);
-        }
-        append_submenu(settings_menu, auto_update, &snap.strings.auto_update_check);
-        append_submenu(menu, settings_menu, &snap.strings.settings);
-
-        let Ok(controls) = CreatePopupMenu() else {
-            log::error!("CreatePopupMenu(controls) failed");
-            let _ = DestroyMenu(menu);
-            return;
-        };
-        append_item(
-            controls,
-            IDM_SIZE_SMALLER,
-            &snap.strings.size_smaller,
-            if snap.bubble_size_logical <= bubble::MIN_BUBBLE_SIZE {
-                MF_GRAYED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            controls,
-            IDM_SIZE_LARGER,
-            &snap.strings.size_larger,
-            if snap.bubble_size_logical >= bubble::MAX_BUBBLE_SIZE {
-                MF_GRAYED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        append_item(
-            controls,
-            IDM_RESET_SIZE,
-            &snap.strings.reset_size,
-            if snap.bubble_size_logical == bubble::DEFAULT_BUBBLE_SIZE {
-                MF_GRAYED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        let _ = AppendMenuW(controls, MF_SEPARATOR, 0, PCWSTR::null());
-        append_item(controls, 0, &snap.strings.control_left_click, MF_GRAYED);
-        append_item(controls, 0, &snap.strings.control_right_click, MF_GRAYED);
-        append_item(controls, 0, &snap.strings.control_drag, MF_GRAYED);
-        append_item(controls, 0, &snap.strings.control_ctrl_wheel, MF_GRAYED);
-        append_item(controls, 0, &snap.strings.control_tray_click, MF_GRAYED);
-        append_submenu(menu, controls, &snap.strings.controls);
-
-        append_item(
-            menu,
-            tray::IDM_TOGGLE_WIDGET,
-            &snap.strings.show_widget,
-            if snap.widget_visible {
-                MF_CHECKED
-            } else {
-                MENU_ITEM_FLAGS(0)
-            },
-        );
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        append_item(menu, IDM_RESTART, &snap.strings.restart, MENU_ITEM_FLAGS(0));
-        append_item(menu, IDM_EXIT, &snap.strings.exit, MENU_ITEM_FLAGS(0));
-
-        let mut pt = POINT::default();
-        let _ = GetCursorPos(&mut pt);
-        let _ = SetForegroundWindow(owner_hwnd);
-        let _ = TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner_hwnd, None);
-        let _ = DestroyMenu(menu);
+        let mut pt=POINT::default(); let _=GetCursorPos(&mut pt);
+        let _=SetForegroundWindow(owner_hwnd);
+        let _=TrackPopupMenu(menu.0,TPM_RIGHTBUTTON,pt.x,pt.y,0,owner_hwnd,None);
     }
+}
+
+fn show_help(owner: HWND) {
+    let strings = i18n::I18n::load().strings().clone();
+    let title = os::to_utf16_nul(&format!("{} (v{})",strings.window_title,env!("CARGO_PKG_VERSION")));
+    let body = os::to_utf16_nul(&strings.help_body);
+    unsafe { MessageBoxW(owner,PCWSTR(body.as_ptr()),PCWSTR(title.as_ptr()),MB_OK | MB_ICONINFORMATION); }
+}
+
+fn check_updates_now() {
+    let hwnd = lock_state().as_ref().and_then(|s| {
+        if matches!(s.update_status,UpdateStatus::Checking | UpdateStatus::Applying) { None }
+        else { Some(s.msg_hwnd) }
+    });
+    if let Some(hwnd)=hwnd { begin_update_check(hwnd.to_hwnd()); }
 }
 
 fn append_item(menu: HMENU, id: u16, label: &str, flags: MENU_ITEM_FLAGS) {
@@ -1357,27 +1245,8 @@ fn append_item(menu: HMENU, id: u16, label: &str, flags: MENU_ITEM_FLAGS) {
     }
 }
 
-fn append_submenu(menu: HMENU, submenu: HMENU, label: &str) {
-    let w = os::to_utf16_nul(label);
-    unsafe {
-        let _ = AppendMenuW(
-            menu,
-            MF_POPUP,
-            submenu.0 as usize,
-            PCWSTR::from_raw(w.as_ptr()),
-        );
-    }
-}
-
 fn version_action_label(snap: &ContextMenuSnapshot) -> String {
-    let base = match snap.update_status {
-        UpdateStatus::Idle => snap.strings.check_for_updates.clone(),
-        UpdateStatus::Checking => snap.strings.checking_for_updates.clone(),
-        UpdateStatus::UpToDate => snap.strings.up_to_date.clone(),
-        UpdateStatus::Available => snap.strings.update_available.clone(),
-        UpdateStatus::Applying => snap.strings.applying_update.clone(),
-        UpdateStatus::Failed => snap.strings.update_failed.clone(),
-    };
+    let base = &snap.strings.check_for_updates;
     // Append the running binary's version so the user can see what
     // they are on without opening an About dialog.
     let with_version = format!("{base} (v{})", env!("CARGO_PKG_VERSION"));
@@ -1733,5 +1602,87 @@ fn toggle_startup() {
     } else if let Ok(exe) = std::env::current_exe() {
         let quoted = format!("\"{}\"", exe.to_string_lossy());
         let _ = os::registry::write_string(STARTUP_REGISTRY_PATH, STARTUP_VALUE_NAME, &quoted);
+    }
+}
+
+#[cfg(test)]
+mod context_menu_tests {
+    use super::*;
+    #[derive(Debug)]
+    struct Entry { path:String, id:u16, flags:u32 }
+    fn inventory(menu:HMENU, prefix:&str, out:&mut Vec<Entry>) {
+        unsafe {
+            for pos in 0..GetMenuItemCount(menu) {
+                let mut buf=[0_u16;512];
+                let n=GetMenuStringW(menu,pos as u32,Some(&mut buf),MF_BYPOSITION);
+                let label=String::from_utf16_lossy(&buf[..n as usize]);
+                if label.is_empty() { continue; }
+                let path=if prefix.is_empty(){label}else{format!("{prefix} > {label}")};
+                let child=GetSubMenu(menu,pos);
+                if child.0.is_null() {
+                    out.push(Entry {path,id:GetMenuItemID(menu,pos) as u16,flags:GetMenuState(menu,pos as u32,MF_BYPOSITION)});
+                } else { inventory(child,&path,out); }
+            }
+        }
+    }
+    fn snapshot(status:UpdateStatus)->ContextMenuSnapshot {
+        ContextMenuSnapshot {
+            strings:i18n::I18n::load().strings().clone(),current_interval:POLL_5_MIN,
+            update_check_interval_secs:Some(settings::UPDATE_CHECK_DAILY_SECS),
+            show_claude:false,show_chatgpt:true,show_opencode_go:false,widget_visible:true,
+            only_over_chatgpt:true,install_channel:InstallChannel::Portable,
+            update_status:status,bubble_size_logical:bubble::DEFAULT_BUBBLE_SIZE,
+            available_version:Some("v9.0.0".into()),
+        }
+    }
+    #[test]
+    fn every_menu_state_preserves_actions_and_separates_search_from_install() {
+        let mut report=String::new();
+        for status in [UpdateStatus::Idle,UpdateStatus::Checking,UpdateStatus::UpToDate,
+            UpdateStatus::Available,UpdateStatus::Applying,UpdateStatus::Failed] {
+            let snap=snapshot(status);
+            let menu=build_context_menu(&snap,true).unwrap();
+            let mut items=Vec::new();inventory(menu.0,"",&mut items);
+            let ids:std::collections::HashSet<_>=items.iter().filter(|e|e.id!=0).map(|e|e.id).collect();
+            assert_eq!(ids.len(),items.iter().filter(|e|e.id!=0).count(),"duplicate actionable ID");
+            for id in [IDM_REFRESH,IDM_EXIT,IDM_RESTART,IDM_HELP,IDM_FREQ_1MIN,IDM_FREQ_5MIN,
+                IDM_FREQ_15MIN,IDM_FREQ_1HOUR,IDM_MODEL_CLAUDE,IDM_MODEL_CHATGPT,IDM_MODEL_OPENCODE_GO,
+                IDM_START_WITH_WINDOWS,IDM_RESET_POSITION,IDM_VERSION_ACTION,IDM_ONLY_CHATGPT,
+                IDM_SIZE_SMALLER,IDM_SIZE_LARGER,IDM_RESET_SIZE,IDM_UPDATE_AUTO_OFF,IDM_UPDATE_AUTO_HOURLY,
+                IDM_UPDATE_AUTO_DAILY,IDM_UPDATE_AUTO_WEEKLY,tray::IDM_TOGGLE_WIDGET] { assert!(ids.contains(&id),"missing action {id}"); }
+            let search=items.iter().find(|e|e.id==IDM_VERSION_ACTION).unwrap();
+            assert!(search.path.ends_with(&format!("Buscar nova atualização (v{})",env!("CARGO_PKG_VERSION"))));
+            let busy=matches!(status,UpdateStatus::Checking|UpdateStatus::Applying);
+            assert_eq!(search.flags & MF_GRAYED.0 != 0,busy);
+            assert_eq!(ids.contains(&IDM_INSTALL_UPDATE),status==UpdateStatus::Available);
+            for id in [IDM_MODEL_CHATGPT,IDM_FREQ_5MIN,IDM_UPDATE_AUTO_DAILY,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET,IDM_ONLY_CHATGPT] {
+                assert!(items.iter().find(|e|e.id==id).unwrap().flags & MF_CHECKED.0 != 0);
+            }
+            assert!(items.iter().find(|e|e.id==IDM_MODEL_OPENCODE_GO).unwrap().flags & MF_GRAYED.0 != 0);
+            for e in &items {
+                for old in ["Refresh","Settings","Providers","Controls","Check for updates","Update frequency","Start with Windows","Restart","Exit","Update failed"] {
+                    assert!(!e.path.contains(old),"untranslated label: {}",e.path);
+                }
+            }
+            report.push_str(&format!("\n{status:?}\n"));
+            for e in &items { report.push_str(&format!("{} [id={}, flags={}]\n",e.path,e.id,e.flags)); }
+        }
+        if let Ok(path)=std::env::var("CODEX_WIDGET_MENU_AUDIT_PATH") { std::fs::write(path,report).unwrap(); }
+    }
+    #[test]
+    fn changed_preferences_and_size_limits_are_reflected_in_the_native_menu() {
+        let mut snap=snapshot(UpdateStatus::Idle);
+        snap.show_chatgpt=false;snap.show_claude=true;snap.only_over_chatgpt=false;snap.widget_visible=false;
+        snap.current_interval=POLL_1_HOUR;snap.update_check_interval_secs=None;
+        for width in [bubble::MIN_BUBBLE_SIZE,bubble::MAX_BUBBLE_SIZE] {
+            snap.bubble_size_logical=width;
+            let menu=build_context_menu(&snap,false).unwrap();
+            let mut items=Vec::new();inventory(menu.0,"",&mut items);
+            let flags=|id|items.iter().find(|e|e.id==id).unwrap().flags;
+            for id in [IDM_MODEL_CHATGPT,IDM_ONLY_CHATGPT,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET] { assert_eq!(flags(id)&MF_CHECKED.0,0); }
+            for id in [IDM_MODEL_CLAUDE,IDM_FREQ_1HOUR,IDM_UPDATE_AUTO_OFF] { assert_ne!(flags(id)&MF_CHECKED.0,0); }
+            assert_eq!(flags(IDM_SIZE_SMALLER)&MF_GRAYED.0!=0,width==bubble::MIN_BUBBLE_SIZE);
+            assert_eq!(flags(IDM_SIZE_LARGER)&MF_GRAYED.0!=0,width==bubble::MAX_BUBBLE_SIZE);
+        }
     }
 }

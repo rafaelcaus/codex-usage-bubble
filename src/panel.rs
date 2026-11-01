@@ -160,7 +160,7 @@ pub fn show(data: PanelData, anchor_hwnd: HWND) {
 fn create_panel_window(x: i32, y: i32, w: i32, h: i32) -> Option<HWND> {
     let hwnd = unsafe {
         let class_w = wide_str(CLASS_NAME);
-        let title_w = wide_str("Usage panel");
+        let title_w = wide_str("Detalhes do consumo");
         let hinstance = GetModuleHandleW(PCWSTR::null()).unwrap_or_default();
         CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,

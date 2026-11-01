@@ -249,7 +249,7 @@ fn surface_rollback_failure(backup: &Path, target_name: &str) {
     // user-meaningful filename so we can format it in-place.
     let strings = crate::i18n::I18n::load().strings().clone();
     let body = format!(
-        "{}{}\n\n{}",
+        "{}{}\n\nPara recuperar a versão anterior, feche o widget e restaure esse arquivo com o nome:\n{}",
         strings.update_rollback_failed_body,
         backup.display(),
         target_name

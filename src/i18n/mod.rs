@@ -1,4 +1,4 @@
-// English UI strings and formatting helpers.
+// Portuguese UI strings and formatting helpers.
 
 use std::time::{Duration, SystemTime};
 
@@ -6,6 +6,12 @@ use std::time::{Duration, SystemTime};
 #[derive(Clone, Debug)]
 pub struct LocaleStrings {
     pub window_title: String,
+    pub help_body: String,
+    pub history_refresh_note: String,
+    pub local_refresh_note: String,
+    pub install_update: String,
+    pub updates_menu: String,
+    pub appearance: String,
     pub refresh: String,
     pub update_frequency: String,
     pub one_minute: String,
@@ -84,7 +90,7 @@ pub struct I18n {
 impl I18n {
     pub fn load() -> Self {
         Self {
-            strings: english_strings(),
+            strings: portuguese_strings(),
         }
     }
 
@@ -93,71 +99,77 @@ impl I18n {
     }
 }
 
-fn english_strings() -> LocaleStrings {
+fn portuguese_strings() -> LocaleStrings {
     LocaleStrings {
-        window_title: "Claude Code Usage Bubble".into(),
-        refresh: "Refresh".into(),
-        update_frequency: "Update frequency".into(),
-        one_minute: "1 minute".into(),
-        five_minutes: "5 minutes".into(),
-        fifteen_minutes: "15 minutes".into(),
-        one_hour: "1 hour".into(),
-        providers: "Providers".into(),
+        window_title: "Consumo de IA".into(),
+        help_body: "COMO USAR\nClique esquerdo no widget: ver detalhes.\nClique direito: abrir o menu.\nArraste o widget para mudar de lugar.\nCtrl + roda do mouse: aumentar ou diminuir.\nClique no ícone perto do relógio para mostrar ou ocultar.\n\nO QUE CADA NÚMERO SIGNIFICA\nPorcentagem: cota disponível na conta. O prazo indica quando a cota renova.\nHoje neste PC (Codex): tokens registrados neste computador desde a meia-noite local; leitura a cada 5 segundos. Não inclui outros computadores nem sessões remotas sem registros neste PC.\nMédia de 7 dias da conta: média dos sete dias completos anteriores, sem incluir hoje. Se faltar algum dia, aparece como indisponível.\n\nAJUSTES\nO intervalo da consulta da cota não altera a leitura dos tokens locais.\nMostrar só sobre a janela do Codex: o widget aparece quando essa janela está em primeiro plano.\nBuscar novas versões automaticamente apenas procura atualizações; a instalação é uma ação separada.".into(),
+        history_refresh_note: "Média da conta: consulta a cada 1 minuto".into(),
+        local_refresh_note: "Tokens deste PC: leitura a cada 5 segundos".into(),
+        install_update: "Instalar a nova versão".into(),
+        updates_menu: "Atualizações do programa".into(),
+        appearance: "Exibição e tamanho".into(),
+        refresh: "Consultar cota agora".into(),
+        update_frequency: "Intervalo da consulta da cota".into(),
+        one_minute: "1 minuto".into(),
+        five_minutes: "5 minutos".into(),
+        fifteen_minutes: "15 minutos".into(),
+        one_hour: "1 hora".into(),
+        providers: "Serviços exibidos".into(),
         claude_label: "Claude Code".into(),
         chatgpt_label: "Codex".into(),
         opencode_go_label: "OpenCode Go".into(),
-        settings: "Settings".into(),
-        start_with_windows: "Start with Windows".into(),
-        reset_position: "Reset position".into(),
-        size_smaller: "Make smaller".into(),
-        size_larger: "Make larger".into(),
-        reset_size: "Reset size".into(),
-        controls: "Controls".into(),
-        control_left_click: "Left-click: details".into(),
-        control_right_click: "Right-click: menu".into(),
-        control_drag: "Drag: move/snap".into(),
-        control_ctrl_wheel: "Ctrl+Wheel: resize".into(),
-        control_tray_click: "Tray click: show/hide".into(),
-        tray_left_click: "Left-click: show/hide".into(),
+        settings: "Configurações".into(),
+        start_with_windows: "Iniciar com o Windows".into(),
+        reset_position: "Voltar à posição padrão".into(),
+        size_smaller: "Diminuir widget".into(),
+        size_larger: "Aumentar widget".into(),
+        reset_size: "Voltar ao tamanho padrão".into(),
+        controls: "Como usar".into(),
+        control_left_click: "Clique esquerdo: ver detalhes do consumo".into(),
+        control_right_click: "Clique direito: abrir este menu".into(),
+        control_drag: "Arrastar: mover o widget pela tela".into(),
+        control_ctrl_wheel: "Ctrl + roda do mouse: ajustar o tamanho".into(),
+        control_tray_click: "Ícone perto do relógio: mostrar ou ocultar".into(),
+        tray_left_click: "Clique: mostrar ou ocultar".into(),
         check_for_updates: "Buscar nova atualização".into(),
-        checking_for_updates: "Checking for updates...".into(),
-        up_to_date: "Up to date".into(),
-        update_failed: "Update failed".into(),
-        applying_update: "Applying update...".into(),
-        update_available: "Update available".into(),
-        update_via_winget: "via WinGet".into(),
-        auto_update_check: "Auto-update check".into(),
-        auto_check_disabled: "Disabled".into(),
-        auto_check_hourly: "Hourly".into(),
-        auto_check_daily: "Daily".into(),
-        auto_check_weekly: "Weekly".into(),
-        exit: "Exit".into(),
-        restart: "Restart".into(),
-        show_widget: "Show widget".into(),
-        only_over_chatgpt: "Somente sobre o ChatGPT".into(),
-        used_word: "usada".into(),
-        remaining_word: "resta".into(),
-        reset_prefix: "Falta para resetar".into(),
-        tokens_prefix: "Tokens neste PC desde o reset".into(),
-        budget_prefix: "Orçamento diário".into(),
-        pace_prefix: "Ritmo".into(),
-        tokens_today_prefix: "Tokens hoje".into(),
+        checking_for_updates: "Buscando nova atualização…".into(),
+        up_to_date: "Você já está na versão mais recente".into(),
+        update_failed: "Falha na atualização; tente novamente".into(),
+        applying_update: "Instalando atualização…".into(),
+        update_available: "Nova versão disponível para instalar".into(),
+        update_via_winget: "pelo WinGet".into(),
+        auto_update_check: "Buscar novas versões automaticamente".into(),
+        auto_check_disabled: "Não buscar automaticamente".into(),
+        auto_check_hourly: "A cada hora".into(),
+        auto_check_daily: "Uma vez por dia".into(),
+        auto_check_weekly: "Uma vez por semana".into(),
+        exit: "Sair do widget".into(),
+        restart: "Reiniciar widget".into(),
+        show_widget: "Mostrar widget".into(),
+        only_over_chatgpt: "Mostrar só sobre a janela do Codex".into(),
+        used_word: "usados".into(),
+        remaining_word: "disponíveis".into(),
+        reset_prefix: "Cota renova em".into(),
+        tokens_prefix: "Tokens registrados neste PC".into(),
+        budget_prefix: "Para durar até a renovação".into(),
+        pace_prefix: "Ritmo de uso".into(),
+        tokens_today_prefix: "Hoje neste PC".into(),
         session_window: "5h".into(),
         weekly_window: "7d".into(),
-        now: "now".into(),
+        now: "agora".into(),
         day_suffix: "d".into(),
         hour_suffix: "h".into(),
-        minute_suffix: "m".into(),
+        minute_suffix: "min".into(),
         second_suffix: "s".into(),
-        token_expired_title: "Claude Code session expired".into(),
-        token_expired_body: "Sign in again to keep tracking your usage.".into(),
-        chatgpt_token_expired_title: "Codex session expired".into(),
-        chatgpt_token_expired_body: "Sign in again to keep tracking your usage.".into(),
-        threshold_80_body: "Approaching the weekly limit.".into(),
-        threshold_95_body: "Weekly limit is close - consider easing up.".into(),
-        update_applied_title: "Update applied".into(),
-        update_applied_body: "Updated to v".into(),
-        update_rollback_failed_body: "Update failed. Your original binary is saved at: ".into(),
+        token_expired_title: "Entre novamente no Claude Code".into(),
+        token_expired_body: "A sessão expirou. Entre no Claude Code para voltar a consultar a cota.".into(),
+        chatgpt_token_expired_title: "Entre novamente no Codex".into(),
+        chatgpt_token_expired_body: "A sessão expirou. Entre no Codex para atualizar os dados da conta.".into(),
+        threshold_80_body: "Você já usou pelo menos 80% da cota de uso. Confira o tempo até a renovação.".into(),
+        threshold_95_body: "Você já usou pelo menos 95% da cota de uso. O limite está próximo.".into(),
+        update_applied_title: "Atualização concluída".into(),
+        update_applied_body: "Versão instalada: v".into(),
+        update_rollback_failed_body: "Não foi possível concluir a atualização. O arquivo da versão anterior está salvo em: ".into(),
     }
 }
 
@@ -289,8 +301,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn english_strings_include_required_menu_labels() {
-        let strings = english_strings();
+    fn portuguese_strings_include_required_menu_labels() {
+        let strings = portuguese_strings();
         for (name, value) in [
             ("refresh", strings.refresh.as_str()),
             ("providers", strings.providers.as_str()),
