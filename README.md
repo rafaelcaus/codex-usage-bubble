@@ -20,6 +20,18 @@ A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
 
+## Modo compacto (v0.6.12)
+
+Clique dentro do círculo ou em **Ver menos** para recolher os textos,
+deixando só o círculo e **Ver mais**. Clique no círculo ou em **Ver mais**
+para expandir novamente. A escolha é salva para a próxima abertura.
+
+O arraste continua movendo o widget nos dois modos. Os dados continuam
+sendo consultados durante o modo compacto. **Exibição e tamanho > Modo
+compacto** também alterna a visualização; **Ver detalhes do consumo** no
+menu abre o painel completo. No modo compacto, o círculo mostra o primeiro
+limite; expanda para ver os demais limites e informações.
+
 ## Resets disponíveis na conta (v0.6.11)
 
 O rodapé do widget mostra a quantidade de resets disponíveis e um resumo da
@@ -83,8 +95,8 @@ arquivada nao sao somados novamente. O widget apenas le os registros;
 nao altera conversas nem credenciais.
 
 Drop it anywhere on screen, drag it around, snap it to a monitor edge,
-left-click for a panel with both your 5-hour and 7-day windows, right-click
-for the menu.
+click the circle to collapse or expand the information; right-click for
+the menu and choose **Ver detalhes do consumo** for the full panel.
 
 ## Acknowledgements
 
@@ -106,8 +118,8 @@ self-updater are all written from scratch against the same public APIs
 - Resize with `Ctrl + MouseWheel` on the bubble, or use **Controls** →
   **Make smaller / Make larger / Reset size** from the right-click menu
   (140–360 logical pixels)
-- Left-click the bubble for an expanded panel with both **5h** and **7d**
-  bars plus reset countdowns
+- Click the circle or **Ver mais/Ver menos** to collapse or expand the text.
+  Open **Ver detalhes do consumo** in the context menu for the full panel.
 - Right-click for refresh, displayed providers, update frequency, startup,
   updates, exit
 - Optional system tray icons (one per enabled provider)
@@ -155,7 +167,8 @@ Run `claude-code-usage-bubble.exe`. The bubble appears near the bottom-right
 corner of your primary monitor on first launch. Drag it where you want it,
 release to snap to the nearest edge if you let go close to one.
 
-- **Left-click** the bubble to open the expanded panel (5h + 7d + countdowns)
+- **Click the circle** or **Ver mais/Ver menos** to toggle the compact view.
+  Use **Ver detalhes do consumo** in the context menu to open the full panel.
 - **Right-click** for refresh, providers, refresh frequency, "Start with
   Windows", controls, auto-update check (Disabled / Hourly / Daily / Weekly),
   manual "Check for updates", exit

@@ -131,6 +131,8 @@ fn position_on_any_monitor(x: i32, y: i32) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub compact_mode: bool,
     #[serde(default = "default_show_claude")]
     pub show_claude_code: bool,
     #[serde(default = "default_show_codex")]
@@ -159,6 +161,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             show_claude_code: default_show_claude(),
+            compact_mode: false,
             show_codex: default_show_codex(),
             show_opencode_go: default_show_opencode_go(),
             bubble_positions: BubblePositions::default(),
@@ -250,6 +253,7 @@ mod tests {
         let settings: Settings =
             serde_json::from_str(json).expect("old settings json should parse");
 
+        assert!(!settings.compact_mode);
         assert!(!settings.show_claude_code);
         assert!(settings.show_codex);
         assert!(!settings.show_opencode_go);
@@ -262,6 +266,16 @@ mod tests {
             Some((30, 40))
         );
         assert_eq!(settings.bubble_positions.get(ProviderId::OpenCodeGo), None);
+    }
+
+    #[test]
+    fn compact_preference_survives_a_settings_round_trip() {
+        let mut settings=Settings::default();
+        settings.compact_mode=true;
+        let restored:Settings=serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(restored.compact_mode);
+        assert_eq!(restored.poll_interval_ms,settings.poll_interval_ms);
+        assert_eq!(restored.update_check_interval_secs,settings.update_check_interval_secs);
     }
 
     #[test]

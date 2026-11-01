@@ -91,16 +91,17 @@ pub struct BubbleConfig {
     pub secondary_label: String,
     pub quota_duration_secs: Option<u64>,
     pub is_dark: bool,
+    pub compact: bool,
 }
 
 /// Fork (Rafael): minimal vertical card — ring + ONE countdown caption.
 /// Height is computed from the exact same content math as the layout below
 /// (in logical units), so the window always fits its content at any DPI.
-fn bubble_height_logical(width_logical: i32, dual:bool, credits:bool) -> i32 {
-    bubble_content_height_logical(width_logical,dual,credits) + 2 * SHADOW_MARGIN_LOGICAL
+fn bubble_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bool) -> i32 {
+    bubble_content_height_logical(width_logical,dual,credits,compact) + 2 * SHADOW_MARGIN_LOGICAL
 }
 
-fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool) -> i32 {
+fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bool) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
@@ -109,7 +110,8 @@ fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool) ->
     // Renewal, optional second quota, local activity and account average.
     let th = small + 2;
     let vh = small + 5;
-    pad + ring + g1 + (3 + i32::from(dual)+i32::from(credits)) * (th + 2 + vh) + (2 + i32::from(dual)+i32::from(credits)) * 4 + pad + 4
+    if compact { return pad+ring+g1+22+pad+4; }
+    pad + ring + g1 + (3 + i32::from(dual)+i32::from(credits)) * (th + 2 + vh) + (2 + i32::from(dual)+i32::from(credits)) * 4 + pad + 4 + 26
 }
 
 fn remaining_fraction(resets_at: Option<SystemTime>, duration_secs: u64) -> Option<f32> {
@@ -179,7 +181,7 @@ pub fn create(config: BubbleConfig) -> HWND {
     let dpi_for_create = crate::os::dpi::for_system();
     let width_px = scale_to_dpi(initial_size_logical, dpi_for_create)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi_for_create);
-    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some(),config.model==ProviderId::ChatGpt), dpi_for_create);
+    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some(),config.model==ProviderId::ChatGpt,config.compact), dpi_for_create);
     let (x, y) = config
         .position
         .unwrap_or_else(|| default_position(width_px, height_px, config.model));
@@ -252,6 +254,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             credits_title:config.credits_title,credits_text:config.credits_text,
             quota_label:config.quota_label,secondary_label:config.secondary_label,quota_duration_secs:config.quota_duration_secs,
             is_dark: config.is_dark,
+            compact:config.compact,
             drag_start_pos: None,
             hidden_by_fullscreen: false,
             user_hidden: false,
@@ -319,6 +322,45 @@ fn app_icons() -> (HICON, HICON) {
     (HICON(big as *mut _), HICON(small as *mut _))
 }
 
+pub fn is_compact(hwnd:HWND)->bool {
+    lock_bubbles().get(&(hwnd.0 as isize)).is_some_and(|b|b.compact)
+}
+pub fn set_compact(hwnd:HWND,compact:bool) {
+    let geometry={
+        let mut bubbles=lock_bubbles();
+        let Some(b)=bubbles.get_mut(&(hwnd.0 as isize)) else {return};
+        if b.compact==compact {return}
+        b.compact=compact;
+        (b.size_logical,b.dpi,b.weekly_pct.is_some(),b.model==ProviderId::ChatGpt)
+    };
+    let (width,dpi,dual,credits)=geometry;
+    unsafe {
+        let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
+        let h=scale_to_dpi(bubble_height_logical(width,dual,credits,compact),dpi);
+        let _=SetWindowPos(hwnd,HWND::default(),0,0,w,h,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+    }
+    clamp_into_work_area(hwnd);
+    render(hwnd);
+}
+fn gesture_is_drag(start:Option<(i32,i32)>,end:(i32,i32))->bool {
+    start.is_some_and(|(x,y)|(end.0-x).abs()>=8 || (end.1-y).abs()>=8)
+}
+fn toggle_hit(layout:&BubbleLayout,point:POINT)->bool {
+    let dx=point.x as f32-layout.ring_cx;
+    let dy=point.y as f32-layout.ring_cy;
+    let radius=layout.ring_radius+layout.ring_stroke_w;
+    let rect=&layout.toggle_rect;
+    dx*dx+dy*dy<=radius*radius ||
+        (point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom)
+}
+pub fn is_toggle_click(hwnd:HWND)->bool {
+    let mut point=POINT::default();let mut rect=RECT::default();
+    unsafe { if GetCursorPos(&mut point).is_err() || GetWindowRect(hwnd,&mut rect).is_err() {return false;} }
+    let bubbles=lock_bubbles();let Some(b)=bubbles.get(&(hwnd.0 as isize)) else {return false};
+    let layout=compute_bubble_layout(b.size_logical,b.dpi,HDC::default(),b.weekly_pct.is_some(),b.model==ProviderId::ChatGpt,b.compact);
+    toggle_hit(&layout,POINT{x:point.x-rect.left,y:point.y-rect.top})
+}
+
 pub fn update_data(
     hwnd: HWND,
     session_pct: Option<f64>,
@@ -357,7 +399,7 @@ pub fn update_data(
         unsafe {
             let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
             let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
-            let h=scale_to_dpi(bubble_height_logical(width,dual,model(hwnd)==Some(ProviderId::ChatGpt)),dpi);
+            let h=scale_to_dpi(bubble_height_logical(width,dual,model(hwnd)==Some(ProviderId::ChatGpt),is_compact(hwnd)),dpi);
             let mut info=MONITORINFO {cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
             let monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
             let y=if GetMonitorInfoW(monitor,&mut info).as_bool(){rect.top.min(info.rcWork.bottom-h).max(info.rcWork.top)}else{rect.top};
@@ -499,6 +541,7 @@ struct BubbleState {
     secondary_label: String,
     quota_duration_secs: Option<u64>,
     is_dark: bool,
+    compact: bool,
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
     user_hidden: bool,
@@ -560,13 +603,7 @@ unsafe extern "system" fn wnd_proc(
             };
             let mut current = RECT::default();
             let _ = GetWindowRect(hwnd, &mut current);
-            let moved = match start {
-                // Fork: 8px instead of 3px — tiny accidental pointer slips on
-                // a quick click must still count as a click (opens the panel),
-                // not as a drag.
-                Some((sx, sy)) => (current.left - sx).abs() >= 8 || (current.top - sy).abs() >= 8,
-                None => false,
-            };
+            let moved=gesture_is_drag(start,(current.left,current.top));
             if moved {
                 snap_to_edge(hwnd);
                 if let Some(model) = model(hwnd) {
@@ -738,7 +775,7 @@ pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
     };
     let width_px = scale_to_dpi(new_logical, dpi)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
-    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual,model(hwnd)==Some(ProviderId::ChatGpt)), dpi);
+    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual,model(hwnd)==Some(ProviderId::ChatGpt),is_compact(hwnd)), dpi);
     let mut r = RECT::default();
     unsafe {
         let _ = GetWindowRect(hwnd, &mut r);
@@ -1491,16 +1528,18 @@ struct BubbleLayout {
     average_value_rect: RECT,
     credits_title_rect:RECT,
     credits_value_rect:RECT,
+    toggle_rect:RECT,
+    toggle_font_px:i32,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
 }
 
-fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool) -> BubbleLayout {
+fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool, compact:bool) -> BubbleLayout {
     // Content box (the visible card). The canvas adds a shadow margin all
     // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual,credits), dpi);
+    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual,credits,compact), dpi);
     let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let canvas_w = width_px + 2 * margin_px;
     let canvas_h = height_px + 2 * margin_px;
@@ -1595,6 +1634,8 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cr
     let credits_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
     ty+=title_h+line_gap;
     let credits_value_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+value_h};
+    let toggle_top=if compact {oy+pad+ring_d+ring_gap} else if credits {credits_value_rect.bottom+pair_gap} else {average_value_rect.bottom+pair_gap};
+    let toggle_rect=RECT {left:ox+pad,top:toggle_top,right:ox+width_px-pad,bottom:toggle_top+scale_to_dpi(22,dpi)};
     let _ = mem_dc;
 
     BubbleLayout {
@@ -1620,6 +1661,8 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cr
         average_value_rect,
         credits_title_rect,
         credits_value_rect,
+        toggle_rect,
+        toggle_font_px:scale_to_dpi(11,dpi),
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1739,7 +1782,12 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
 
 
 
-    // ---- Ring (5h) ----
+    let button=&layout.toggle_rect;
+    fill_rounded_rect(&mut pixmap,button.left as f32,button.top as f32,
+        (button.right-button.left) as f32,(button.bottom-button.top) as f32,
+        layout.corner_radius as f32*0.5,Color::from_hex("#30304D"));
+
+    // ---- Primary quota ring ----
     {
         // Track: full circle in muted color.
         let mut paint = Paint::default();
@@ -1973,6 +2021,7 @@ struct PaintInputs {
     secondary_label: String,
     quota_duration_secs: Option<u64>,
     is_dark: bool,
+    compact: bool,
     pulse_phase: u32,
 }
 
@@ -2001,6 +2050,7 @@ fn render(hwnd: HWND) {
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
                 is_dark: true,
+                compact:b.compact,
                 pulse_phase: b.pulse_phase,
             },
         )
@@ -2016,7 +2066,7 @@ fn render(hwnd: HWND) {
             ReleaseDC(hwnd, screen_dc);
             return;
         }
-        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some(),inputs.model==ProviderId::ChatGpt);
+        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some(),inputs.model==ProviderId::ChatGpt,inputs.compact);
 
         static RENDER_LOGGED: AtomicBool = AtomicBool::new(false);
         if !RENDER_LOGGED.swap(true, Ordering::Relaxed) {
@@ -2211,6 +2261,7 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         draw_text_in_rect(hdc, &layout.pct_rect, &pct_text, DT_CENTER);
 
 
+        if !inputs.compact {
         // Reset title + precise value.
         draw_title_line(
             hdc,
@@ -2261,6 +2312,16 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         }
 
 
+        }
+        // One visible affordance in both modes; ring clicks use the same action.
+        let label=if inputs.compact {"Ver mais"}else{"Ver menos"};
+        let mut button_px=layout.toggle_font_px;
+        while button_px>4 && measure_text_w(hdc,label,button_px)>layout.toggle_rect.right-layout.toggle_rect.left-4 {button_px-=1;}
+        let toggle_font=create_font(button_px,&font_name,FW_SEMIBOLD.0 as i32);
+        let before_toggle=SelectObject(hdc,toggle_font);
+        SetTextColor(hdc,COLORREF(0x00FFFFFF));
+        draw_text_in_rect(hdc,&layout.toggle_rect,label,DT_CENTER);
+        SelectObject(hdc,before_toggle);let _=DeleteObject(toggle_font);
         SelectObject(hdc, prev_font);
         let _ = DeleteObject(big_font);
         let _ = DeleteObject(small_font);
@@ -2329,13 +2390,36 @@ fn create_font(height_px: i32, name_w: &[u16], weight: i32) -> HFONT {
 mod metric_layout_tests {
     use super::*;
     #[test]
+    fn compact_has_only_ring_and_button_geometry_at_all_dpis() {
+        for width in [50,80,120,240] {
+            for dpi in [96,120,144,192] {
+                let compact=compute_bubble_layout(width,dpi,HDC::default(),true,true,true);
+                let expanded=compute_bubble_layout(width,dpi,HDC::default(),true,true,false);
+                assert!(compact.canvas_h<expanded.canvas_h);
+                assert_eq!(compact.ring_cy,expanded.ring_cy);
+                assert!(compact.toggle_rect.top as f32>compact.ring_cy+compact.ring_radius);
+                assert!(compact.toggle_rect.bottom<=compact.canvas_h-compact.shadow_margin);
+                assert!(toggle_hit(&compact,POINT{x:compact.ring_cx as i32,y:compact.ring_cy as i32}));
+                assert!(toggle_hit(&compact,POINT{x:compact.toggle_rect.left+1,y:compact.toggle_rect.top+1}));
+                assert!(!toggle_hit(&compact,POINT{x:0,y:0}));
+                assert!(!toggle_hit(&expanded,POINT{x:expanded.today_value_rect.left+1,y:expanded.today_value_rect.top+1}));
+            }
+        }
+    }
+    #[test]
+    fn dragging_does_not_become_a_compact_toggle() {
+        assert!(!gesture_is_drag(Some((100,100)),(103,102)));
+        assert!(gesture_is_drag(Some((100,100)),(108,100)));
+        assert!(gesture_is_drag(Some((100,100)),(100,90)));
+    }
+    #[test]
     fn three_metric_pairs_fit_at_supported_sizes_and_dpis() {
         for width in [50, 80, 120, 180, 240] {
             for dpi in [96, 120, 144, 192] {
               for dual in [false,true] {
-                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual,true);
+                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual,true,false);
                 assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
-                assert!(layout.credits_value_rect.bottom <= layout.canvas_h - layout.shadow_margin,
+                assert!(layout.toggle_rect.bottom <= layout.canvas_h - layout.shadow_margin,
                     "width={width} dpi={dpi}");
                 if dual { assert!(layout.secondary_value_rect.bottom < layout.today_title_rect.top); }
               }
@@ -2349,13 +2433,14 @@ mod metric_layout_tests {
         unsafe {
             let dc = CreateCompatibleDC(None);
             let dual=std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref()!=Ok("single");
-            let layout = compute_bubble_layout(120, 144, dc,dual,true);
+            let compact=std::env::var("CODEX_WIDGET_PREVIEW_COMPACT").as_deref()==Ok("1");
+            let layout = compute_bubble_layout(120, 144, dc,dual,true,compact);
             let inputs = PaintInputs {
                 model: ProviderId::ChatGpt, session_pct: Some(64.0),
                 session_text: if dual {"2 horas e 30 minutos"}else{"6 dias e 2 horas"}.into(), session_resets_at:None,
                 weekly_pct:if dual {Some(20.0)}else{None},weekly_text:"6 dias e 2 horas".into(),weekly_resets_at:None,
                 today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),
-                average_text:"23.456.789 tokens/dia".into(),credits_title:"Resets: 2 disponíveis".into(),credits_text:"Vence 04/11 18:00".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,pulse_phase:0,
+                average_text:"23.456.789 tokens/dia".into(),credits_title:"Resets: 2 disponíveis".into(),credits_text:"Vence 04/11 18:00".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,compact,pulse_phase:0,
             };
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {

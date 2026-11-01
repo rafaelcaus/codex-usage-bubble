@@ -72,6 +72,8 @@ const IDM_START_WITH_WINDOWS: u16 = 30;
 const IDM_RESET_POSITION: u16 = 31;
 const IDM_VERSION_ACTION: u16 = 32;
 const IDM_HELP: u16 = 39;
+const IDM_COMPACT: u16 = 40;
+const IDM_DETAILS: u16 = 41;
 const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
@@ -382,6 +384,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         credits_title:String::new(),credits_text:String::new(),
         quota_label:"Cota".into(),secondary_label:String::new(),quota_duration_secs:None,
         is_dark,
+        compact: settings.compact_mode,
     });
     if hwnd != HWND::default() {
         if let Some(s) = lock_state().as_mut() {
@@ -430,9 +433,19 @@ unsafe extern "system" fn msg_wnd_proc(
 // ---------- Bubble callbacks ----------
 
 fn on_bubble_click(hwnd: HWND, model: ProviderId) {
+    if bubble::is_toggle_click(hwnd) { toggle_compact_mode();return; }
     log::info!("bubble click (no drag): toggle panel for {model:?}");
     let data = build_panel_data(model);
     panel::toggle(data, hwnd);
+}
+
+fn toggle_compact_mode() {
+    update_settings(|s|s.settings.compact_mode=!s.settings.compact_mode);
+    let snapshot=lock_state().as_ref().map(|s|(s.settings.compact_mode,s.bubbles.values().copied().collect::<Vec<_>>()));
+    if let Some((compact,windows))=snapshot {
+        panel::hide();
+        for hwnd in windows { bubble::set_compact(hwnd.to_hwnd(),compact); }
+    }
 }
 
 fn on_bubble_right_click(hwnd: HWND, _model: ProviderId, _pt: POINT) {
@@ -464,6 +477,10 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_RESET_POSITION => reset_positions(),
         IDM_VERSION_ACTION => check_updates_now(),
         IDM_HELP => show_help(_owner_hwnd),
+        IDM_COMPACT => toggle_compact_mode(),
+        IDM_DETAILS => {
+            if let Some(model)=bubble::model(_owner_hwnd) { panel::toggle(build_panel_data(model),_owner_hwnd); }
+        },
         IDM_SIZE_SMALLER => resize_bubbles(-bubble::RESIZE_STEP_LOGICAL),
         IDM_SIZE_LARGER => resize_bubbles(bubble::RESIZE_STEP_LOGICAL),
         IDM_RESET_SIZE => set_bubble_size(bubble::DEFAULT_BUBBLE_SIZE),
@@ -1110,6 +1127,7 @@ struct ContextMenuSnapshot {
     update_status: UpdateStatus,
     bubble_size_logical: i32,
     reset_credits:crate::reset_credits::View,
+    compact:bool,
 }
 
 /// Owns the entire native menu tree, including on construction failures.
@@ -1140,10 +1158,12 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
     let root = menu.0;
     let text = &snap.strings;
     append_item(root, IDM_REFRESH, &text.refresh, MENU_ITEM_FLAGS(0));
+    append_item(root,IDM_DETAILS,"Ver detalhes do consumo",MENU_ITEM_FLAGS(0));
     append_item(root, tray::IDM_TOGGLE_WIDGET, &text.show_widget, checked(snap.widget_visible));
     separator(root);
 
     let display = add_submenu(root, &text.appearance)?;
+    append_item(display,IDM_COMPACT,"Modo compacto",checked(snap.compact));
     append_item(display, IDM_ONLY_CHATGPT, &text.only_over_chatgpt, checked(snap.only_over_chatgpt));
     separator(display);
     append_item(display, IDM_SIZE_SMALLER, &text.size_smaller,
@@ -1215,6 +1235,7 @@ fn show_context_menu(owner_hwnd: HWND) {
             only_over_chatgpt:s.settings.only_over_chatgpt,install_channel:s.install_channel,
             update_status:s.update_status,bubble_size_logical:s.settings.bubble_size_logical,
             reset_credits:crate::reset_credits::latest(),
+            compact:s.settings.compact_mode,
         },
         None => return,
     };
@@ -1653,6 +1674,7 @@ mod context_menu_tests {
             only_over_chatgpt:true,install_channel:InstallChannel::Portable,
             update_status:status,bubble_size_logical:bubble::DEFAULT_BUBBLE_SIZE,
             reset_credits:crate::reset_credits::Snapshot::default().view(),
+            compact:false,
         }
     }
     #[test]
@@ -1665,7 +1687,7 @@ mod context_menu_tests {
             let mut items=Vec::new();inventory(menu.0,"",&mut items);
             let ids:std::collections::HashSet<_>=items.iter().filter(|e|e.id!=0).map(|e|e.id).collect();
             assert_eq!(ids.len(),items.iter().filter(|e|e.id!=0).count(),"duplicate actionable ID");
-            for id in [IDM_REFRESH,IDM_EXIT,IDM_RESTART,IDM_HELP,IDM_FREQ_1MIN,IDM_FREQ_5MIN,
+            for id in [IDM_REFRESH,IDM_EXIT,IDM_RESTART,IDM_HELP,IDM_COMPACT,IDM_DETAILS,IDM_FREQ_1MIN,IDM_FREQ_5MIN,
                 IDM_FREQ_15MIN,IDM_FREQ_1HOUR,IDM_MODEL_CLAUDE,IDM_MODEL_CHATGPT,IDM_MODEL_OPENCODE_GO,
                 IDM_START_WITH_WINDOWS,IDM_RESET_POSITION,IDM_VERSION_ACTION,IDM_ONLY_CHATGPT,
                 IDM_SIZE_SMALLER,IDM_SIZE_LARGER,IDM_RESET_SIZE,IDM_UPDATE_AUTO_OFF,IDM_UPDATE_AUTO_HOURLY,
@@ -1711,14 +1733,14 @@ mod context_menu_tests {
     fn changed_preferences_and_size_limits_are_reflected_in_the_native_menu() {
         let mut snap=snapshot(UpdateStatus::Idle);
         snap.show_chatgpt=false;snap.show_claude=true;snap.only_over_chatgpt=false;snap.widget_visible=false;
-        snap.current_interval=POLL_1_HOUR;snap.update_check_interval_secs=None;
+        snap.current_interval=POLL_1_HOUR;snap.update_check_interval_secs=None;snap.compact=true;
         for width in [bubble::MIN_BUBBLE_SIZE,bubble::MAX_BUBBLE_SIZE] {
             snap.bubble_size_logical=width;
             let menu=build_context_menu(&snap,false).unwrap();
             let mut items=Vec::new();inventory(menu.0,"",&mut items);
             let flags=|id|items.iter().find(|e|e.id==id).unwrap().flags;
             for id in [IDM_MODEL_CHATGPT,IDM_ONLY_CHATGPT,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET] { assert_eq!(flags(id)&MF_CHECKED.0,0); }
-            for id in [IDM_MODEL_CLAUDE,IDM_FREQ_1HOUR,IDM_UPDATE_AUTO_OFF] { assert_ne!(flags(id)&MF_CHECKED.0,0); }
+            for id in [IDM_MODEL_CLAUDE,IDM_FREQ_1HOUR,IDM_UPDATE_AUTO_OFF,IDM_COMPACT] { assert_ne!(flags(id)&MF_CHECKED.0,0); }
             assert_eq!(flags(IDM_SIZE_SMALLER)&MF_GRAYED.0!=0,width==bubble::MIN_BUBBLE_SIZE);
             assert_eq!(flags(IDM_SIZE_LARGER)&MF_GRAYED.0!=0,width==bubble::MAX_BUBBLE_SIZE);
         }

@@ -1,10 +1,11 @@
-# Menu em português — v0.6.11
+# Menu em português — v0.6.12
 
 ## Organização
 
 - **Consultar cota agora:** consulta o consumo da conta; não busca versões do programa.
+- **Ver detalhes do consumo:** abre o painel completo sem alterar o modo compacto.
 - **Mostrar widget:** marca ou desmarca a exibição do widget.
-- **Exibição e tamanho:** mostrar só sobre a janela do Codex, aumentar, diminuir e restaurar tamanho ou posição.
+- **Exibição e tamanho:** modo compacto, mostrar só sobre a janela do Codex, aumentar, diminuir e restaurar tamanho ou posição.
 - **Serviços exibidos:** Codex e Claude Code. OpenCode Go permanece identificado como indisponível.
 - **Configurações:** iniciar com o Windows e escolher o intervalo da consulta da cota.
   - Intervalos disponíveis: 1 minuto, 5 minutos, 15 minutos e 1 hora.
@@ -26,3 +27,5 @@ Textos de todos os menus e submenus, painel de consumo, dica do ícone perto do 
 Os testes constroem e percorrem os menus nativos do Windows nos cinco estados de atualização: inicial, buscando, atualizado, instalando e falha. Conferem o botão único de busca e atualização, IDs sem duplicação, opções marcadas, serviços indisponíveis e limites de tamanho. Esses testes não acionam instalação, saída, reinício nem gravação das preferências reais.
 
 Testes do fluxo automático conferem instalação após detecção, bloqueio de ciclos simultâneos, ausência de instalação quando já atualizado ou quando a consulta falha e liberação para tentar novamente após falha na instalação. O instalador é simulado nesses testes; nenhuma instalação real do usuário é substituída.
+
+No modo compacto ficam apenas o círculo e o botão Ver mais. O círculo e os botões Ver mais/Ver menos alternam a visualização; o arraste continua movendo o widget. O modo é salvo nas preferências, sem interromper consultas ou a atualização automática do programa.
