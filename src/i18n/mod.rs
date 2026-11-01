@@ -119,7 +119,7 @@ fn english_strings() -> LocaleStrings {
         control_ctrl_wheel: "Ctrl+Wheel: resize".into(),
         control_tray_click: "Tray click: show/hide".into(),
         tray_left_click: "Left-click: show/hide".into(),
-        check_for_updates: "Check for updates".into(),
+        check_for_updates: "Buscar nova atualização".into(),
         checking_for_updates: "Checking for updates...".into(),
         up_to_date: "Up to date".into(),
         update_failed: "Update failed".into(),

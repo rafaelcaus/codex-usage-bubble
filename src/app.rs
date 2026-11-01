@@ -1379,9 +1379,8 @@ fn version_action_label(snap: &ContextMenuSnapshot) -> String {
         UpdateStatus::Failed => snap.strings.update_failed.clone(),
     };
     // Append the running binary's version so the user can see what
-    // they are on without opening an About dialog. Using middle-dot as
-    // the separator matches the bubble's countdown formatting.
-    let with_version = format!("{base} \u{00b7} v{}", env!("CARGO_PKG_VERSION"));
+    // they are on without opening an About dialog.
+    let with_version = format!("{base} (v{})", env!("CARGO_PKG_VERSION"));
     match snap.install_channel {
         InstallChannel::Winget => format!("{with_version} ({})", snap.strings.update_via_winget),
         InstallChannel::Portable => with_version,
