@@ -116,7 +116,12 @@ fn codex_candidates() -> Vec<PathBuf> {
         }
     }
     // Whatever `codex` resolves to on PATH (npm shim .cmd included).
-    if let Ok(res) = Command::new("where.exe").arg("codex").output() {
+    let mut where_cmd = Command::new("where.exe");
+    where_cmd.arg("codex");
+    // Discovery also runs on retries; hide its console just like the app-server.
+    #[cfg(windows)]
+    where_cmd.creation_flags(CREATE_NO_WINDOW);
+    if let Ok(res) = where_cmd.output() {
         for line in String::from_utf8_lossy(&res.stdout).lines() {
             let t = line.trim();
             if !t.is_empty() {
