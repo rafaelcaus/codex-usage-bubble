@@ -20,11 +20,11 @@ A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
 
-## Modo compacto (v0.6.12)
+## Modo compacto (v0.6.13)
 
 Clique dentro do círculo ou em **Ver menos** para recolher os textos,
 deixando só o círculo e **Ver mais**. Clique no círculo ou em **Ver mais**
-para expandir novamente. A escolha é salva para a próxima abertura.
+para expandir novamente. Um clique normal (pressionar e soltar) basta; não é necessário segurar. Ver mais/Ver menos são textos discretos, sem fundo destacado. A escolha é salva para a próxima abertura.
 
 O arraste continua movendo o widget nos dois modos. Os dados continuam
 sendo consultados durante o modo compacto. **Exibição e tamanho > Modo

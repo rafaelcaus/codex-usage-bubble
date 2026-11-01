@@ -432,8 +432,8 @@ unsafe extern "system" fn msg_wnd_proc(
 
 // ---------- Bubble callbacks ----------
 
-fn on_bubble_click(hwnd: HWND, model: ProviderId) {
-    if bubble::is_toggle_click(hwnd) { toggle_compact_mode();return; }
+fn on_bubble_click(hwnd: HWND, model: ProviderId, point:POINT) {
+    if bubble::is_toggle_point(hwnd,point) { toggle_compact_mode();return; }
     log::info!("bubble click (no drag): toggle panel for {model:?}");
     let data = build_panel_data(model);
     panel::toggle(data, hwnd);

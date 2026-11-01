@@ -9,8 +9,8 @@
 // Painting is hybrid: tiny-skia renders the shape (AA fills + AA stroked arc)
 // into a Pixmap; the Pixmap is copied byte-for-byte into a 32bpp BI_RGB DIB;
 // GDI then overlays ClearType text on top; UpdateLayeredWindow blits the result
-// to the screen with per-pixel alpha. WM_NCHITTEST returns HTCAPTION inside the
-// stadium so the OS handles drag for free.
+// to the screen with per-pixel alpha. Client mouse events distinguish
+// immediate clicks from pointer-captured dragging; no caption move loop.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -34,6 +34,7 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture,ReleaseCapture,SetCapture};
 use windows::Win32::UI::Shell::{
     ExtractIconExW, SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS,
     APPBARDATA,
@@ -126,7 +127,7 @@ fn remaining_fraction(resets_at: Option<SystemTime>, duration_secs: u64) -> Opti
 /// doesn't know about `app`. The owner installs these once at startup so the
 /// proc can dispatch UI events back without an upward `crate::app::` reach.
 pub struct Callbacks {
-    pub on_click: fn(HWND, ProviderId),
+    pub on_click: fn(HWND, ProviderId, POINT),
     pub on_right_click: fn(HWND, ProviderId, POINT),
     pub on_moved: fn(ProviderId, (i32, i32)),
     pub on_resized: fn(ProviderId, i32),
@@ -175,7 +176,9 @@ pub fn register_class() {
 
 /// Create a bubble window. Returns the HWND. The caller (app::run) owns the
 /// message-loop dispatch.
-pub fn create(config: BubbleConfig) -> HWND {
+pub fn create(config: BubbleConfig) -> HWND { create_inner(config,true) }
+
+fn create_inner(config:BubbleConfig, visible:bool)->HWND {
     register_class();
     let initial_size_logical = config.size_logical.clamp(MIN_BUBBLE_SIZE, MAX_BUBBLE_SIZE);
     let dpi_for_create = crate::os::dpi::for_system();
@@ -255,7 +258,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             quota_label:config.quota_label,secondary_label:config.secondary_label,quota_duration_secs:config.quota_duration_secs,
             is_dark: config.is_dark,
             compact:config.compact,
-            drag_start_pos: None,
+            pointer: None,
             hidden_by_fullscreen: false,
             user_hidden: false,
             hidden_by_focus: false,
@@ -276,13 +279,13 @@ pub fn create(config: BubbleConfig) -> HWND {
     // create (or a partially-off-screen saved position) is still possible.
     clamp_into_work_area(hwnd);
 
-    render(hwnd);
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        // Periodic fullscreen-foreground check.
-        SetTimer(hwnd, TIMER_FULLSCREEN_CHECK, FULLSCREEN_POLL_MS, None);
+    if visible {
+        render(hwnd);
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            SetTimer(hwnd, TIMER_FULLSCREEN_CHECK, FULLSCREEN_POLL_MS, None);
+        }
     }
-
     hwnd
 }
 
@@ -353,12 +356,37 @@ fn toggle_hit(layout:&BubbleLayout,point:POINT)->bool {
     dx*dx+dy*dy<=radius*radius ||
         (point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom)
 }
-pub fn is_toggle_click(hwnd:HWND)->bool {
-    let mut point=POINT::default();let mut rect=RECT::default();
-    unsafe { if GetCursorPos(&mut point).is_err() || GetWindowRect(hwnd,&mut rect).is_err() {return false;} }
+pub fn is_toggle_point(hwnd:HWND,point:POINT)->bool {
     let bubbles=lock_bubbles();let Some(b)=bubbles.get(&(hwnd.0 as isize)) else {return false};
     let layout=compute_bubble_layout(b.size_logical,b.dpi,HDC::default(),b.weekly_pct.is_some(),b.model==ProviderId::ChatGpt,b.compact);
-    toggle_hit(&layout,POINT{x:point.x-rect.left,y:point.y-rect.top})
+    toggle_hit(&layout,point)
+}
+
+#[derive(Clone,Copy)]
+struct PointerGesture {
+    start:POINT,
+    origin:(i32,i32),
+    dragged:bool,
+}
+impl PointerGesture {
+    fn advance(&mut self,cursor:POINT)->Option<(i32,i32)> {
+        self.dragged|=gesture_is_drag(Some((self.start.x,self.start.y)),(cursor.x,cursor.y));
+        self.dragged.then_some((self.origin.0+cursor.x-self.start.x,self.origin.1+cursor.y-self.start.y))
+    }
+}
+fn client_cursor(hwnd:HWND,lparam:LPARAM)->Option<(POINT,POINT)> {
+    let local=lparam_to_point(lparam);
+    let mut screen=local;
+    unsafe {ClientToScreen(hwnd,&mut screen).as_bool().then_some((local,screen))}
+}
+fn move_pointer_window(hwnd:HWND,position:Option<(i32,i32)>) {
+    if let Some((x,y))=position {
+        unsafe {
+            let mut rect=RECT::default();
+            if GetWindowRect(hwnd,&mut rect).is_ok() && rect.left==x && rect.top==y {return;}
+            let _=SetWindowPos(hwnd,HWND::default(),x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+        }
+    }
 }
 
 pub fn update_data(
@@ -542,7 +570,7 @@ struct BubbleState {
     quota_duration_secs: Option<u64>,
     is_dark: bool,
     compact: bool,
-    drag_start_pos: Option<(i32, i32)>,
+    pointer: Option<PointerGesture>,
     hidden_by_fullscreen: bool,
     user_hidden: bool,
     /// Fork (Rafael): focus-follow ("Somente sobre o ChatGPT") hid the bubble
@@ -580,46 +608,52 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_NCHITTEST => hit_test(hwnd, lparam),
-        WM_ENTERSIZEMOVE => {
-            let mut r = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut r);
-            if let Some(b) = lock_bubbles().get_mut(&(hwnd.0 as isize)) {
-                b.drag_start_pos = Some((r.left, r.top));
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            if let Some((_,screen))=client_cursor(hwnd,lparam) {
+                let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
+                if let Some(b)=lock_bubbles().get_mut(&(hwnd.0 as isize)) {
+                    b.pointer=Some(PointerGesture {start:screen,origin:(rect.left,rect.top),dragged:false});
+                }
+                // Hidden-window regression tests inject messages directly;
+                // they must not take capture away from the user's desktop.
+                if IsWindowVisible(hwnd).as_bool() {SetCapture(hwnd);}
             }
             LRESULT(0)
         }
-        WM_EXITSIZEMOVE => {
-            // WM_NCLBUTTONUP isn't reliably delivered for HTCAPTION drags; instead
-            // we infer click-vs-drag from whether the window actually moved.
-            let start = {
-                let mut bubbles = lock_bubbles();
-                let start = bubbles
-                    .get(&(hwnd.0 as isize))
-                    .and_then(|b| b.drag_start_pos);
-                if let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) {
-                    b.drag_start_pos = None;
-                }
-                start
-            };
-            let mut current = RECT::default();
-            let _ = GetWindowRect(hwnd, &mut current);
-            let moved=gesture_is_drag(start,(current.left,current.top));
-            if moved {
-                snap_to_edge(hwnd);
-                if let Some(model) = model(hwnd) {
-                    if let Some(pos) = position(hwnd) {
-                        dispatch(|cb| (cb.on_moved)(model, pos));
+        WM_MOUSEMOVE => {
+            if let Some((_,screen))=client_cursor(hwnd,lparam) {
+                let target=lock_bubbles().get_mut(&(hwnd.0 as isize))
+                    .and_then(|b|b.pointer.as_mut()).and_then(|p|p.advance(screen));
+                move_pointer_window(hwnd,target);
+            }
+            LRESULT(0)
+        }
+        WM_LBUTTONUP => {
+            let cursor=client_cursor(hwnd,lparam);
+            let gesture=lock_bubbles().get_mut(&(hwnd.0 as isize)).and_then(|b|b.pointer.take());
+            if GetCapture()==hwnd {let _=ReleaseCapture();}
+            if let (Some((local,screen)),Some(mut gesture))=(cursor,gesture) {
+                move_pointer_window(hwnd,gesture.advance(screen));
+                if gesture.dragged {
+                    snap_to_edge(hwnd);
+                    if let Some(model)=model(hwnd) {
+                        if let Some(pos)=position(hwnd) {dispatch(|cb|(cb.on_moved)(model,pos));}
                     }
+                } else if hit_test_point(hwnd,screen).0==HTCLIENT as isize {
+                    if let Some(model)=model(hwnd) {dispatch(|cb|(cb.on_click)(hwnd,model,local));}
                 }
-            } else if let Some(model) = model(hwnd) {
-                dispatch(|cb| (cb.on_click)(hwnd, model));
             }
             LRESULT(0)
         }
-        WM_NCRBUTTONUP => {
-            if let Some(model) = model(hwnd) {
-                let pt = lparam_to_point(lparam);
-                dispatch(|cb| (cb.on_right_click)(hwnd, model, pt));
+        WM_CAPTURECHANGED | WM_CANCELMODE => {
+            if let Some(b)=lock_bubbles().get_mut(&(hwnd.0 as isize)) {b.pointer=None;}
+            if msg==WM_CANCELMODE && GetCapture()==hwnd {let _=ReleaseCapture();}
+            LRESULT(0)
+        }
+        WM_RBUTTONUP => {
+            if let (Some(model),Some((_,screen)))=(model(hwnd),client_cursor(hwnd,lparam)) {
+                dispatch(|cb|(cb.on_right_click)(hwnd,model,screen));
             }
             LRESULT(0)
         }
@@ -696,8 +730,8 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
-    let pt = lparam_to_point(lparam);
+fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {hit_test_point(hwnd,lparam_to_point(lparam))}
+fn hit_test_point(hwnd:HWND,pt:POINT)->LRESULT {
     let mut r = RECT::default();
     unsafe {
         if GetWindowRect(hwnd, &mut r).is_err() {
@@ -721,7 +755,7 @@ fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let lx = pt.x - r.left - m;
     let ly = pt.y - r.top - m;
     if point_in_rounded_rect(lx, ly, w - 2 * m, h - 2 * m, radius) {
-        LRESULT(HTCAPTION as isize)
+        LRESULT(HTCLIENT as isize)
     } else {
         LRESULT(HTTRANSPARENT as isize)
     }
@@ -1662,7 +1696,7 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cr
         credits_title_rect,
         credits_value_rect,
         toggle_rect,
-        toggle_font_px:scale_to_dpi(11,dpi),
+        toggle_font_px:scale_to_dpi(10,dpi),
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1781,11 +1815,6 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
     }
 
 
-
-    let button=&layout.toggle_rect;
-    fill_rounded_rect(&mut pixmap,button.left as f32,button.top as f32,
-        (button.right-button.left) as f32,(button.bottom-button.top) as f32,
-        layout.corner_radius as f32*0.5,Color::from_hex("#30304D"));
 
     // ---- Primary quota ring ----
     {
@@ -2317,9 +2346,9 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         let label=if inputs.compact {"Ver mais"}else{"Ver menos"};
         let mut button_px=layout.toggle_font_px;
         while button_px>4 && measure_text_w(hdc,label,button_px)>layout.toggle_rect.right-layout.toggle_rect.left-4 {button_px-=1;}
-        let toggle_font=create_font(button_px,&font_name,FW_SEMIBOLD.0 as i32);
+        let toggle_font=create_font(button_px,&font_name,FW_NORMAL.0 as i32);
         let before_toggle=SelectObject(hdc,toggle_font);
-        SetTextColor(hdc,COLORREF(0x00FFFFFF));
+        SetTextColor(hdc,COLORREF(Color::from_hex("#A8A8B8").into_colorref()));
         draw_text_in_rect(hdc,&layout.toggle_rect,label,DT_CENTER);
         SelectObject(hdc,before_toggle);let _=DeleteObject(toggle_font);
         SelectObject(hdc, prev_font);
@@ -2389,6 +2418,66 @@ fn create_font(height_px: i32, name_w: &[u16], weight: i32) -> HFONT {
 #[cfg(test)]
 mod metric_layout_tests {
     use super::*;
+    #[test]
+    fn native_press_release_toggles_once_without_a_caption_move_loop() {
+        use std::sync::atomic::AtomicUsize;
+        static CLICKS:AtomicUsize=AtomicUsize::new(0);
+        static MOVES:AtomicUsize=AtomicUsize::new(0);
+        fn clicked(hwnd:HWND,_model:ProviderId,point:POINT) {
+            if is_toggle_point(hwnd,point) {
+                CLICKS.fetch_add(1,Ordering::SeqCst);
+                set_compact(hwnd,!is_compact(hwnd));
+            }
+        }
+        install_callbacks(Callbacks {
+            on_click:clicked,on_right_click:|_,_,_|{},on_moved:|_,_|{MOVES.fetch_add(1,Ordering::SeqCst);},
+            on_resized:|_,_|{},on_menu_command:|_,_|{},on_settings_changed:||{},
+        });
+        let hwnd=create_inner(BubbleConfig {
+            model:ProviderId::ChatGpt,size_logical:120,position:Some((100,100)),
+            session_pct:Some(70.0),session_text:"6 dias".into(),session_resets_at:None,
+            weekly_pct:None,weekly_text:String::new(),weekly_resets_at:None,
+            today_text:String::new(),today_title:String::new(),average_text:String::new(),
+            credits_title:String::new(),credits_text:String::new(),quota_label:"7d".into(),
+            secondary_label:String::new(),quota_duration_secs:Some(604800),is_dark:true,compact:true,
+        },false);
+        assert_ne!(hwnd,HWND::default());
+        fn point(hwnd:HWND,button:bool)->POINT {
+            let guard=lock_bubbles();let b=guard.get(&(hwnd.0 as isize)).unwrap();
+            let l=compute_bubble_layout(b.size_logical,b.dpi,HDC::default(),false,true,b.compact);
+            if button {POINT{x:(l.toggle_rect.left+l.toggle_rect.right)/2,y:(l.toggle_rect.top+l.toggle_rect.bottom)/2}}
+            else {POINT{x:l.ring_cx as i32,y:l.ring_cy as i32}}
+        }
+        fn param(p:POINT)->LPARAM {LPARAM((((p.y as u16 as u32)<<16)|(p.x as u16 as u32)) as isize)}
+        unsafe {
+            assert!(!IsWindowVisible(hwnd).as_bool());
+            assert_eq!(SendMessageW(hwnd,WM_MOUSEACTIVATE,WPARAM(0),LPARAM(0)).0,MA_NOACTIVATE as isize);
+            for button in [false,false,true,true] {
+                let before=is_compact(hwnd);let p=point(hwnd,button);
+                let mut screen=p;let _=ClientToScreen(hwnd,&mut screen);
+                assert_eq!(SendMessageW(hwnd,WM_NCHITTEST,WPARAM(0),param(screen)).0,HTCLIENT as isize);
+                SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
+                assert_eq!(is_compact(hwnd),before);
+                // No wait, move, hold, WM_ENTERSIZEMOVE or WM_EXITSIZEMOVE.
+                SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(p));
+                assert_eq!(is_compact(hwnd),!before);
+            }
+            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
+            let p=point(hwnd,false);
+            SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
+            SendMessageW(hwnd,WM_MOUSEMOVE,WPARAM(1),param(POINT{x:p.x+20,y:p.y}));
+            SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(POINT{x:p.x-20,y:p.y}));
+            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
+            assert_eq!(MOVES.load(Ordering::SeqCst),1);
+            let p=point(hwnd,false);
+            SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
+            SendMessageW(hwnd,WM_CANCELMODE,WPARAM(0),LPARAM(0));
+            SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(p));
+            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
+            assert!(!IsWindowVisible(hwnd).as_bool());
+        }
+        destroy(hwnd);
+    }
     #[test]
     fn compact_has_only_ring_and_button_geometry_at_all_dpis() {
         for width in [50,80,120,240] {

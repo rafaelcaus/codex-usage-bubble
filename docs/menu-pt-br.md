@@ -1,4 +1,4 @@
-# Menu em português — v0.6.12
+# Menu em português — v0.6.13
 
 ## Organização
 
@@ -29,3 +29,5 @@ Os testes constroem e percorrem os menus nativos do Windows nos cinco estados de
 Testes do fluxo automático conferem instalação após detecção, bloqueio de ciclos simultâneos, ausência de instalação quando já atualizado ou quando a consulta falha e liberação para tentar novamente após falha na instalação. O instalador é simulado nesses testes; nenhuma instalação real do usuário é substituída.
 
 No modo compacto ficam apenas o círculo e o botão Ver mais. O círculo e os botões Ver mais/Ver menos alternam a visualização; o arraste continua movendo o widget. O modo é salvo nas preferências, sem interromper consultas ou a atualização automática do programa.
+
+A partir da v0.6.13, pressionar e soltar o botão esquerdo alterna imediatamente. O arraste só começa após movimento do ponteiro e nunca é tratado como clique, mesmo quando volta ao ponto inicial. Ver mais/Ver menos têm estilo de texto discreto, sem card destacado. O teste de regressão usa mensagens reais em uma janela Win32 oculta, sem mover o ponteiro real nem alterar preferências do usuário.
