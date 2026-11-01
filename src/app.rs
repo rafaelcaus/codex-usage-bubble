@@ -700,57 +700,29 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     };
 
-    // Tokens today: account API first (covers desktop app + CLI on this
-    // machine), local CLI sessions as fallback, dash when neither.
+    // Daily account aggregate: retain the date supplied by the service.
+    // It may lag behind today and is not a real-time token counter.
     let api = crate::appserver::latest();
-    // "Consumo hoje DD/MM:" title for the bubble (local date).
-    let today_title = {
-        use chrono::Local;
-        let d = Local::now().format("%d/%m").to_string();
-        format!("Consumo hoje {d}:")
-    };
     if id == ProviderId::ChatGpt {
-        if let Some(t) = api.tokens_today {
+        if let Some((t, title, detail)) = api.daily_reading() {
             let n = (t.max(0) as u64).min(u64::MAX);
             entry.tokens_today_text = format!(
-                "Tokens hoje: {}",
+                "{detail}: {}",
                 crate::codex_tokens::format_tokens(n)
             );
             let (num, unit) = crate::codex_tokens::format_tokens_words(t);
             entry.today_micro = format!("{num} {unit}");
-            entry.today_title = today_title;
+            entry.today_title = title;
         } else {
             entry.today_micro.clear();
             entry.today_title.clear();
-            match local_midnight().and_then(crate::codex_tokens::tokens_since_reset) {
-                Some(n) if n > 0 => {
-                    entry.tokens_today_text = format!(
-                        "Tokens hoje (so CLI neste PC): {}",
-                        crate::codex_tokens::format_tokens(n)
-                    )
-                }
-                _ => {
-                    entry.tokens_today_text =
-                        format!("{}: -", strings.tokens_today_prefix)
-                }
-            }
+            entry.tokens_today_text = "Tokens da conta: indisponiveis".into();
         }
     } else {
         entry.today_micro.clear();
         entry.today_title.clear();
         entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
-}
-
-/// Fork: today 00:00 local time as SystemTime (for "tokens today").
-fn local_midnight() -> Option<SystemTime> {
-    use chrono::{Local, TimeZone};
-    let now = Local::now();
-    let midnight = now.date_naive().and_hms_opt(0, 0, 0)?;
-    Local
-        .from_local_datetime(&midnight)
-        .single()
-        .map(|dt| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
 }
 
 fn refresh_countdowns() {

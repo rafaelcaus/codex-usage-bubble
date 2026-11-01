@@ -17,22 +17,44 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
     mpsc, Arc, Mutex, OnceLock,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
 const RESP_TIMEOUT: Duration = Duration::from_secs(15);
 const POLL_SECS: u64 = 60;
+const MAX_SAMPLE_AGE: Duration = Duration::from_secs(POLL_SECS * 2 + 15);
 /// CREATE_NO_WINDOW so no console window flashes next to the bubble.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Debug, Default)]
 pub struct UsageSnapshot {
-    pub tokens_today: Option<i64>,
+    pub daily_tokens: Option<i64>,
     pub bucket_date: Option<String>,
     pub lifetime_tokens: Option<i64>,
+    fetched_at: Option<Instant>,
+}
+
+impl UsageSnapshot {
+    /// A successful read is not proof that the daily aggregate is live.
+    /// Keep the service's date attached to its count, including yesterday.
+    pub fn daily_reading(&self) -> Option<(i64, String, String)> {
+        self.daily_reading_at(Instant::now())
+    }
+
+    fn daily_reading_at(&self, now: Instant) -> Option<(i64, String, String)> {
+        if now.saturating_duration_since(self.fetched_at?) > MAX_SAMPLE_AGE {
+            return None;
+        }
+        let date = chrono::NaiveDate::parse_from_str(self.bucket_date.as_deref()?, "%Y-%m-%d").ok()?;
+        Some((
+            self.daily_tokens?,
+            format!("Consumo {}:", date.format("%d/%m")),
+            format!("Tokens em {} (registro diario da conta)", date.format("%d/%m/%Y")),
+        ))
+    }
 }
 
 fn cell() -> &'static Mutex<UsageSnapshot> {
@@ -59,6 +81,8 @@ fn worker() {
             }
             Err(e) => {
                 log::warn!("app-server cycle failed: {e}");
+                // Do not keep an old number looking like a current reading.
+                *cell().lock().expect("appserver snapshot poisoned") = UsageSnapshot::default();
                 client.reset();
             }
         }
@@ -80,16 +104,19 @@ fn as_i64(v: &serde_json::Value) -> Option<i64> {
 
 /// Pick the newest daily bucket (by startDate string, YYYY-MM-DD sorts).
 fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
-    let lifetime_tokens = v.get("lifetimeTokens").and_then(as_i64);
+    let lifetime_tokens = v.pointer("/summary/lifetimeTokens").and_then(as_i64)
+        .or_else(|| v.get("lifetimeTokens").and_then(as_i64));
     let mut best: Option<(String, i64)> = None;
     if let Some(arr) = v.get("dailyUsageBuckets").and_then(|b| b.as_array()) {
         for b in arr {
-            let date = b
+            let Some(date) = b
                 .get("startDate")
                 .and_then(|s| s.as_str())
-                .unwrap_or("")
-                .to_string();
-            let tokens = b.get("tokens").and_then(as_i64).unwrap_or(0);
+                .filter(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
+            else { continue };
+            let Some(tokens) = b.get("tokens").and_then(as_i64).filter(|n| *n >= 0)
+            else { continue };
+            let date = date.to_string();
             let newer = best
                 .as_ref()
                 .map(|(d, _)| date.as_str() > d.as_str())
@@ -100,9 +127,10 @@ fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
         }
     }
     UsageSnapshot {
-        tokens_today: best.as_ref().map(|(_, t)| *t),
+        daily_tokens: best.as_ref().map(|(_, t)| *t),
         bucket_date: best.map(|(d, _)| d),
         lifetime_tokens,
+        fetched_at: Some(Instant::now()),
     }
 }
 
@@ -320,7 +348,7 @@ mod tests {
             ]
         });
         let s = parse_usage(&v);
-        assert_eq!(s.tokens_today, Some(55300000));
+        assert_eq!(s.daily_tokens, Some(55300000));
         assert_eq!(s.bucket_date.as_deref(), Some("2026-09-24"));
         assert_eq!(s.lifetime_tokens, Some(999));
     }
@@ -329,8 +357,68 @@ mod tests {
     fn empty_usage_is_none() {
         let v: serde_json::Value = serde_json::json!({});
         let s = parse_usage(&v);
-        assert_eq!(s.tokens_today, None);
+        assert_eq!(s.daily_tokens, None);
         assert_eq!(s.lifetime_tokens, None);
+    }
+
+    #[test]
+    fn yesterday_is_labeled_with_the_service_date() {
+        // Synthetic counts reproduce the date mismatch seen on 01/11.
+        let s = parse_usage(&serde_json::json!({
+            "summary": {"lifetimeTokens": 9999999},
+            "dailyUsageBuckets": [
+                {"startDate": "2026-10-30", "tokens": 2345678},
+                {"startDate": "2026-10-31", "tokens": 1234567}
+            ]
+        }));
+        let (tokens, title, detail) = s.daily_reading().unwrap();
+        assert_eq!(tokens, 1234567);
+        assert_eq!(title, "Consumo 31/10:");
+        assert!(detail.contains("31/10/2026"));
+        assert!(!detail.contains("hoje"));
+        assert_eq!(s.lifetime_tokens, Some(9999999));
+    }
+
+    #[test]
+    fn invalid_or_missing_counts_do_not_become_zero() {
+        let s = parse_usage(&serde_json::json!({
+            "dailyUsageBuckets": [
+                {"startDate": "2026-10-30", "tokens": 123},
+                {"startDate": "2026-10-31", "tokens": null},
+                {"startDate": "2026-11-01"},
+                {"startDate": "2026-11-02", "tokens": -1},
+                {"startDate": "2026-11-99", "tokens": 999}
+            ]
+        }));
+        assert_eq!(s.daily_tokens, Some(123));
+        assert_eq!(s.bucket_date.as_deref(), Some("2026-10-30"));
+        assert!(parse_usage(&serde_json::json!({
+            "dailyUsageBuckets": [{"startDate": "2026-11-01", "tokens": null}]
+        })).daily_reading().is_none());
+    }
+
+    #[test]
+    fn newer_valid_bucket_replaces_previous_day_and_preserves_real_zero() {
+        let s = parse_usage(&serde_json::json!({
+            "dailyUsageBuckets": [
+                {"startDate": "2026-11-01", "tokens": 0},
+                {"startDate": "2026-10-31", "tokens": 1234567}
+            ]
+        }));
+        let (tokens, title, _) = s.daily_reading().unwrap();
+        assert_eq!(tokens, 0);
+        assert_eq!(title, "Consumo 01/11:");
+    }
+
+    #[test]
+    fn stale_or_unavailable_samples_are_not_displayed() {
+        let s = parse_usage(&serde_json::json!({
+            "dailyUsageBuckets": [{"startDate": "2026-11-01", "tokens": 456}]
+        }));
+        let at = s.fetched_at.unwrap();
+        assert!(s.daily_reading_at(at + Duration::from_secs(60)).is_some());
+        assert!(s.daily_reading_at(at + MAX_SAMPLE_AGE + Duration::from_secs(1)).is_none());
+        assert!(UsageSnapshot::default().daily_reading().is_none());
     }
 
     #[test]
