@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "claude-code-usage-bubble"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "chrono",
  "dirs",

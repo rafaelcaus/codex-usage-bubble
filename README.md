@@ -20,6 +20,23 @@ A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
 
+## Resets disponíveis na conta (v0.6.11)
+
+O rodapé do widget mostra a quantidade de resets disponíveis e um resumo da
+validade. O painel de consumo e o menu **Resets do Codex** mostram os detalhes
+fornecidos pela conta, com datas e horas no fuso do computador. A consulta
+ocorre a cada minuto e apenas lê os créditos; não os utiliza.
+
+- Quantidade zero só aparece quando a fonte informa zero.
+- **Sem vencimento** só aparece quando a fonte declara que os créditos não expiram.
+- **Validade não informada** indica que a conta não forneceu os detalhes necessários.
+- Um asterisco indica datas parciais. A quantidade da conta é mantida mesmo quando a lista de detalhes vem limitada.
+- Se uma data já passou, o widget indica que a validade precisa de nova consulta em vez de apresentar aquela validade como futura.
+- Falhas de consulta e leituras antigas aparecem como informação indisponível.
+
+A validade de um reset disponível é diferente do prazo normal de renovação
+da cota mostrado nos círculos.
+
 ## Atualização automática (v0.6.10)
 
 Em **Atualizações do programa**, **Buscar nova atualização (vX.Y.Z)** procura,

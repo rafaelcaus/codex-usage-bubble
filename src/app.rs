@@ -148,6 +148,10 @@ struct ProviderUiState {
     /// Local date and explicit machine scope for the bubble.
     today_title: String,
     average_micro: String,
+    credits_title:String,
+    credits_value:String,
+    credits_count_text:String,
+    credits_expiry_text:String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -375,6 +379,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         today_text: String::new(),
         today_title: String::new(),
         average_text: String::new(),
+        credits_title:String::new(),credits_text:String::new(),
         quota_label:"Cota".into(),secondary_label:String::new(),quota_duration_secs:None,
         is_dark,
     });
@@ -710,6 +715,9 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
             entry.today_micro = "Indisponível".into();
             entry.tokens_today_text = "Hoje neste PC: leitura indisponível".into();
         }
+        let credits=crate::reset_credits::latest();
+        entry.credits_title=credits.title;entry.credits_value=credits.value;
+        entry.credits_count_text=credits.count_text;entry.credits_expiry_text=credits.expiry_text;
         let api = crate::appserver::latest();
         let from = today - chrono::Duration::days(7);
         let to = today - chrono::Duration::days(1);
@@ -724,6 +732,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         entry.today_micro.clear();
         entry.today_title.clear();
         entry.average_micro.clear();
+        entry.credits_title.clear();entry.credits_value.clear();entry.credits_count_text.clear();entry.credits_expiry_text.clear();
         entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
 }
@@ -806,6 +815,8 @@ fn propagate_to_ui() {
                 .unwrap_or_default(),
             entry.map(|s| s.average_micro.clone()).unwrap_or_default(),
             first_label, second_label, duration_secs,
+            entry.map(|s|s.credits_title.clone()).unwrap_or_default(),
+            entry.map(|s|s.credits_value.clone()).unwrap_or_default(),
         );
     }
     refresh_tray_icons_with(&snap);
@@ -847,6 +858,7 @@ fn build_panel_data(model: ProviderId) -> PanelData {
         budget_text: provider_state.budget_text,
         pace_text: provider_state.pace_text,
         tokens_today_text: provider_state.tokens_today_text,
+        credits_count_text:provider_state.credits_count_text,credits_expiry_text:provider_state.credits_expiry_text,
         is_dark: s.is_dark,
         strings,
     }
@@ -861,6 +873,7 @@ fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiSta
         budget_text: p.budget_text.clone(),
         pace_text: p.pace_text.clone(),
         tokens_today_text: p.tokens_today_text.clone(),
+        credits_count_text:p.credits_count_text.clone(),credits_expiry_text:p.credits_expiry_text.clone(),
         is_dark: snap.is_dark,
         strings: snap.i18n_strings.clone(),
     }
@@ -876,6 +889,7 @@ fn placeholder_panel(model: ProviderId) -> PanelData {
         budget_text: String::new(),
         pace_text: String::new(),
         tokens_today_text: String::new(),
+        credits_count_text:String::new(),credits_expiry_text:String::new(),
         is_dark: false,
         strings,
     }
@@ -1095,6 +1109,7 @@ struct ContextMenuSnapshot {
     install_channel: InstallChannel,
     update_status: UpdateStatus,
     bubble_size_logical: i32,
+    reset_credits:crate::reset_credits::View,
 }
 
 /// Owns the entire native menu tree, including on construction failures.
@@ -1179,6 +1194,10 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
         (IDM_UPDATE_AUTO_WEEKLY, Some(settings::UPDATE_CHECK_WEEKLY_SECS), &text.auto_check_weekly),
     ] { append_item(automatic, id, label, checked(value == snap.update_check_interval_secs)); }
 
+    let resets=add_submenu(root,"Resets do Codex")?;
+    for detail in &snap.reset_credits.details { append_item(resets,0,detail,MF_GRAYED); }
+    separator(resets);
+    append_item(resets,0,"Consulta a cada minuto · datas no horário deste PC",MF_GRAYED);
     append_item(root, IDM_HELP, &text.controls, MENU_ITEM_FLAGS(0));
     separator(root);
     append_item(root, IDM_RESTART, &text.restart, MENU_ITEM_FLAGS(0));
@@ -1195,6 +1214,7 @@ fn show_context_menu(owner_hwnd: HWND) {
             show_opencode_go:s.settings.show_opencode_go,widget_visible:s.settings.widget_visible,
             only_over_chatgpt:s.settings.only_over_chatgpt,install_channel:s.install_channel,
             update_status:s.update_status,bubble_size_logical:s.settings.bubble_size_logical,
+            reset_credits:crate::reset_credits::latest(),
         },
         None => return,
     };
@@ -1632,6 +1652,7 @@ mod context_menu_tests {
             show_claude:false,show_chatgpt:true,show_opencode_go:false,widget_visible:true,
             only_over_chatgpt:true,install_channel:InstallChannel::Portable,
             update_status:status,bubble_size_logical:bubble::DEFAULT_BUBBLE_SIZE,
+            reset_credits:crate::reset_credits::Snapshot::default().view(),
         }
     }
     #[test]
@@ -1668,6 +1689,24 @@ mod context_menu_tests {
         }
         if let Ok(path)=std::env::var("CODEX_WIDGET_MENU_AUDIT_PATH") { std::fs::write(path,report).unwrap(); }
     }
+    #[test]
+    fn reset_credit_details_are_read_only_and_preserve_the_reported_count() {
+        let mut snap=snapshot(UpdateStatus::Idle);
+        snap.reset_credits=crate::reset_credits::Snapshot::parse(&serde_json::json!({
+            "rateLimitResetCredits":{"availableCount":2,"credits":[
+                {"id":"fixture-a","status":"available","expiresAt":2000000000_i64},
+                {"id":"fixture-b","status":"available","expiresAt":null}
+            ]}})).view();
+        let menu=build_context_menu(&snap,false).unwrap();
+        let mut items=Vec::new();inventory(menu.0,"",&mut items);
+        let resets:Vec<_>=items.iter().filter(|e|e.path.starts_with("Resets do Codex >")).collect();
+        assert!(resets.len()>=4);
+        assert!(resets.iter().all(|e|e.id==0 && e.flags&MF_GRAYED.0!=0));
+        assert!(resets.iter().any(|e|e.path.contains("Resets disponíveis na conta: 2")));
+        assert!(resets.iter().any(|e|e.path.contains("sem vencimento")));
+        assert!(resets.iter().any(|e|e.path.contains("hora local")));
+    }
+
     #[test]
     fn changed_preferences_and_size_limits_are_reflected_in_the_native_menu() {
         let mut snap=snapshot(UpdateStatus::Idle);

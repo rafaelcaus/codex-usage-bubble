@@ -1,4 +1,4 @@
-# Menu em português — v0.6.10
+# Menu em português — v0.6.11
 
 ## Organização
 
@@ -13,6 +13,7 @@
   - **Buscar nova atualização (vX.Y.Z)** sempre informa a versão instalada; ao encontrar uma versão nova, baixa, valida e instala sem outro clique.
   - A atualização programada pode ocorrer a cada hora, dia ou semana. A opção **Somente ao buscar pelo menu** desativa a programação; uma busca manual continua instalando a versão encontrada automaticamente.
   - Mensagens de busca, instalação, versão atual e falha ficam separadas dos botões de ação.
+- **Resets do Codex:** consulta somente leitura com quantidade disponível e os vencimentos informados pela conta. Inclui avisos de detalhes parciais e ausência de validade; não aciona créditos.
 - **Como usar:** explica cliques, arraste, tamanho, porcentagem da cota, consumo local e média da conta.
 - **Reiniciar widget** e **Sair do widget:** afetam somente este aplicativo.
 

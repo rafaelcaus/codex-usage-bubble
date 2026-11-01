@@ -85,6 +85,8 @@ pub struct BubbleConfig {
     pub today_text: String,
     pub today_title: String,
     pub average_text: String,
+    pub credits_title:String,
+    pub credits_text:String,
     pub quota_label: String,
     pub secondary_label: String,
     pub quota_duration_secs: Option<u64>,
@@ -94,11 +96,11 @@ pub struct BubbleConfig {
 /// Fork (Rafael): minimal vertical card — ring + ONE countdown caption.
 /// Height is computed from the exact same content math as the layout below
 /// (in logical units), so the window always fits its content at any DPI.
-fn bubble_height_logical(width_logical: i32, dual:bool) -> i32 {
-    bubble_content_height_logical(width_logical,dual) + 2 * SHADOW_MARGIN_LOGICAL
+fn bubble_height_logical(width_logical: i32, dual:bool, credits:bool) -> i32 {
+    bubble_content_height_logical(width_logical,dual,credits) + 2 * SHADOW_MARGIN_LOGICAL
 }
 
-fn bubble_content_height_logical(width_logical: i32, dual:bool) -> i32 {
+fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
@@ -107,7 +109,7 @@ fn bubble_content_height_logical(width_logical: i32, dual:bool) -> i32 {
     // Renewal, optional second quota, local activity and account average.
     let th = small + 2;
     let vh = small + 5;
-    pad + ring + g1 + (3 + i32::from(dual)) * (th + 2 + vh) + (2 + i32::from(dual)) * 4 + pad + 4
+    pad + ring + g1 + (3 + i32::from(dual)+i32::from(credits)) * (th + 2 + vh) + (2 + i32::from(dual)+i32::from(credits)) * 4 + pad + 4
 }
 
 fn remaining_fraction(resets_at: Option<SystemTime>, duration_secs: u64) -> Option<f32> {
@@ -177,7 +179,7 @@ pub fn create(config: BubbleConfig) -> HWND {
     let dpi_for_create = crate::os::dpi::for_system();
     let width_px = scale_to_dpi(initial_size_logical, dpi_for_create)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi_for_create);
-    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some()), dpi_for_create);
+    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some(),config.model==ProviderId::ChatGpt), dpi_for_create);
     let (x, y) = config
         .position
         .unwrap_or_else(|| default_position(width_px, height_px, config.model));
@@ -247,6 +249,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             today_text: config.today_text,
             today_title: config.today_title,
             average_text: config.average_text,
+            credits_title:config.credits_title,credits_text:config.credits_text,
             quota_label:config.quota_label,secondary_label:config.secondary_label,quota_duration_secs:config.quota_duration_secs,
             is_dark: config.is_dark,
             drag_start_pos: None,
@@ -330,6 +333,8 @@ pub fn update_data(
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
+    credits_title:String,
+    credits_text:String,
 ) {
     let resize = {
         let mut bubbles = lock_bubbles();
@@ -344,6 +349,7 @@ pub fn update_data(
         b.today_text = today_text;
         b.today_title = today_title;
         b.average_text = average_text;
+        b.credits_title=credits_title;b.credits_text=credits_text;
         b.quota_label=quota_label;b.secondary_label=secondary_label;b.quota_duration_secs=quota_duration_secs;
         changed.then_some((b.size_logical,b.dpi,b.weekly_pct.is_some()))
     };
@@ -351,7 +357,7 @@ pub fn update_data(
         unsafe {
             let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
             let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
-            let h=scale_to_dpi(bubble_height_logical(width,dual),dpi);
+            let h=scale_to_dpi(bubble_height_logical(width,dual,model(hwnd)==Some(ProviderId::ChatGpt)),dpi);
             let mut info=MONITORINFO {cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
             let monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
             let y=if GetMonitorInfoW(monitor,&mut info).as_bool(){rect.top.min(info.rcWork.bottom-h).max(info.rcWork.top)}else{rect.top};
@@ -487,6 +493,8 @@ struct BubbleState {
     today_text: String,
     today_title: String,
     average_text: String,
+    credits_title:String,
+    credits_text:String,
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
@@ -730,7 +738,7 @@ pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
     };
     let width_px = scale_to_dpi(new_logical, dpi)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
-    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual), dpi);
+    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual,model(hwnd)==Some(ProviderId::ChatGpt)), dpi);
     let mut r = RECT::default();
     unsafe {
         let _ = GetWindowRect(hwnd, &mut r);
@@ -1481,16 +1489,18 @@ struct BubbleLayout {
     today_value_rect: RECT,
     average_title_rect: RECT,
     average_value_rect: RECT,
+    credits_title_rect:RECT,
+    credits_value_rect:RECT,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
 }
 
-fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool) -> BubbleLayout {
+fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool) -> BubbleLayout {
     // Content box (the visible card). The canvas adds a shadow margin all
     // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual), dpi);
+    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual,credits), dpi);
     let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let canvas_w = width_px + 2 * margin_px;
     let canvas_h = height_px + 2 * margin_px;
@@ -1581,6 +1591,10 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool) ->
     let average_value_rect = RECT {
         left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + value_h,
     };
+    ty+=value_h+pair_gap;
+    let credits_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
+    ty+=title_h+line_gap;
+    let credits_value_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+value_h};
     let _ = mem_dc;
 
     BubbleLayout {
@@ -1604,6 +1618,8 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool) ->
         today_value_rect,
         average_title_rect,
         average_value_rect,
+        credits_title_rect,
+        credits_value_rect,
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1951,6 +1967,8 @@ struct PaintInputs {
     today_text: String,
     today_title: String,
     average_text: String,
+    credits_title:String,
+    credits_text:String,
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
@@ -1978,6 +1996,7 @@ fn render(hwnd: HWND) {
                 today_text: b.today_text.clone(),
                 today_title: b.today_title.clone(),
                 average_text: b.average_text.clone(),
+                credits_title:b.credits_title.clone(),credits_text:b.credits_text.clone(),
                 quota_label:b.quota_label.clone(),secondary_label:b.secondary_label.clone(),quota_duration_secs:b.quota_duration_secs,
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
@@ -1997,7 +2016,7 @@ fn render(hwnd: HWND) {
             ReleaseDC(hwnd, screen_dc);
             return;
         }
-        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some());
+        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some(),inputs.model==ProviderId::ChatGpt);
 
         static RENDER_LOGGED: AtomicBool = AtomicBool::new(false);
         if !RENDER_LOGGED.swap(true, Ordering::Relaxed) {
@@ -2237,6 +2256,8 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
                 &layout.average_title_rect, "Média 7d da conta:");
             draw_value_line(hdc, &font_name, layout.main_font_px + 3,
                 COLORREF(0x00FFFFFF), &layout.average_value_rect, &inputs.average_text);
+            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.credits_title_rect,&inputs.credits_title);
+            draw_value_line(hdc,&font_name,layout.main_font_px+3,COLORREF(0x00FFFFFF),&layout.credits_value_rect,&inputs.credits_text);
         }
 
 
@@ -2312,9 +2333,9 @@ mod metric_layout_tests {
         for width in [50, 80, 120, 180, 240] {
             for dpi in [96, 120, 144, 192] {
               for dual in [false,true] {
-                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual);
+                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual,true);
                 assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
-                assert!(layout.average_value_rect.bottom <= layout.canvas_h - layout.shadow_margin,
+                assert!(layout.credits_value_rect.bottom <= layout.canvas_h - layout.shadow_margin,
                     "width={width} dpi={dpi}");
                 if dual { assert!(layout.secondary_value_rect.bottom < layout.today_title_rect.top); }
               }
@@ -2328,13 +2349,13 @@ mod metric_layout_tests {
         unsafe {
             let dc = CreateCompatibleDC(None);
             let dual=std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref()!=Ok("single");
-            let layout = compute_bubble_layout(120, 144, dc,dual);
+            let layout = compute_bubble_layout(120, 144, dc,dual,true);
             let inputs = PaintInputs {
                 model: ProviderId::ChatGpt, session_pct: Some(64.0),
                 session_text: if dual {"2 horas e 30 minutos"}else{"6 dias e 2 horas"}.into(), session_resets_at:None,
                 weekly_pct:if dual {Some(20.0)}else{None},weekly_text:"6 dias e 2 horas".into(),weekly_resets_at:None,
                 today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),
-                average_text:"23.456.789 tokens/dia".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,pulse_phase:0,
+                average_text:"23.456.789 tokens/dia".into(),credits_title:"Resets: 2 disponíveis".into(),credits_text:"Vence 04/11 18:00".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,pulse_phase:0,
             };
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {

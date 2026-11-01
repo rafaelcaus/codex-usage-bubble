@@ -101,6 +101,12 @@ fn worker() {
                 client.reset();
             }
         }
+        // Independent of the daily aggregate: a usage-summary failure must
+        // not hide a successful read of available reset credits.
+        match client.request("account/rateLimits/read",None) {
+            Ok(result)=>crate::reset_credits::store(Some(&result)),
+            Err(_)=> { crate::reset_credits::store(None);client.reset(); }
+        }
         std::thread::sleep(Duration::from_secs(POLL_SECS));
     }
 }

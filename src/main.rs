@@ -6,6 +6,7 @@
 
 // Original infrastructure.
 mod appserver;
+mod reset_credits;
 mod codex_tokens;
 mod local_usage;
 mod creds;

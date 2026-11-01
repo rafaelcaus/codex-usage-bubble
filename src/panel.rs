@@ -24,7 +24,7 @@ const CLASS_NAME: &str = "ClaudeCodeUsageBubblePanel";
 // Fork (Rafael): widened + taller — weekly bar row plus "reset" and "tokens"
 // detail lines (5h row removed: Pro plan = weekly credits only).
 const PANEL_W_LOGICAL: i32 = 380;
-const PANEL_H_LOGICAL: i32 = 216;
+const PANEL_H_LOGICAL: i32 = 264;
 const PADDING_LOGICAL: i32 = 14;
 const ROW_GAP_LOGICAL: i32 = 8;
 const LABEL_W_LOGICAL: i32 = 28;
@@ -39,6 +39,8 @@ pub struct PanelData {
     pub budget_text: String,
     pub pace_text: String,
     pub tokens_today_text: String,
+    pub credits_count_text:String,
+    pub credits_expiry_text:String,
     pub is_dark: bool,
     pub strings: LocaleStrings,
 }
@@ -362,6 +364,8 @@ fn paint(hwnd: HWND, hdc: HDC) {
             &data.pace_text,
             &data.tokens_text,
             &data.tokens_today_text,
+            &data.credits_count_text,
+            &data.credits_expiry_text,
         ] {
             draw_text(
                 hdc,
@@ -517,6 +521,7 @@ fn clone_data() -> Option<PanelData> {
         budget_text: p.data.budget_text.clone(),
         pace_text: p.data.pace_text.clone(),
         tokens_today_text: p.data.tokens_today_text.clone(),
+        credits_count_text:p.data.credits_count_text.clone(),credits_expiry_text:p.data.credits_expiry_text.clone(),
         is_dark: p.data.is_dark,
         strings: p.data.strings.clone(),
     })
