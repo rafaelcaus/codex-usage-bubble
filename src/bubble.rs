@@ -86,6 +86,7 @@ pub struct BubbleConfig {
     pub weekly_resets_at: Option<SystemTime>,
     pub today_text: String,
     pub today_title: String,
+    pub average_text: String,
     pub is_dark: bool,
 }
 
@@ -105,7 +106,7 @@ fn bubble_content_height_logical(width_logical: i32) -> i32 {
     // Two title+value pairs under the ring (reset, today).
     let th = small + 2;
     let vh = small + 5;
-    pad + ring + g1 + th + 2 + vh + 4 + th + 2 + vh + pad + 4
+    pad + ring + g1 + 3 * (th + 2 + vh) + 2 * 4 + pad + 4
 }
 
 #[derive(Clone, Copy)]
@@ -263,6 +264,7 @@ pub fn create(config: BubbleConfig) -> HWND {
             weekly_resets_at: config.weekly_resets_at,
             today_text: config.today_text,
             today_title: config.today_title,
+            average_text: config.average_text,
             is_dark: config.is_dark,
             drag_start_pos: None,
             hidden_by_fullscreen: false,
@@ -341,6 +343,7 @@ pub fn update_data(
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
     today_title: String,
+    average_text: String,
 ) {
     {
         let mut bubbles = lock_bubbles();
@@ -355,6 +358,7 @@ pub fn update_data(
         b.weekly_resets_at = weekly_resets_at;
         b.today_text = today_text;
         b.today_title = today_title;
+        b.average_text = average_text;
     }
     sync_pulse_timer(hwnd);
     sync_time_progress_timer(hwnd);
@@ -484,6 +488,7 @@ struct BubbleState {
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
     today_title: String,
+    average_text: String,
     is_dark: bool,
     drag_start_pos: Option<(i32, i32)>,
     hidden_by_fullscreen: bool,
@@ -1471,6 +1476,8 @@ struct BubbleLayout {
     countdown_rect: RECT,
     today_title_rect: RECT,
     today_value_rect: RECT,
+    average_title_rect: RECT,
+    average_value_rect: RECT,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
@@ -1560,6 +1567,14 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         right: ox + width_px - pad,
         bottom: ty + value_h,
     };
+    ty += value_h + pair_gap;
+    let average_title_rect = RECT {
+        left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + title_h,
+    };
+    ty += title_h + line_gap;
+    let average_value_rect = RECT {
+        left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + value_h,
+    };
     let _ = mem_dc;
 
     BubbleLayout {
@@ -1579,6 +1594,8 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC) -> BubbleLayo
         countdown_rect,
         today_title_rect,
         today_value_rect,
+        average_title_rect,
+        average_value_rect,
         big_font_px,
         small_font_px,
         main_font_px,
@@ -1928,6 +1945,7 @@ struct PaintInputs {
     weekly_resets_at: Option<SystemTime>,
     today_text: String,
     today_title: String,
+    average_text: String,
     is_dark: bool,
     pulse_phase: u32,
 }
@@ -1951,6 +1969,7 @@ fn render(hwnd: HWND) {
                 weekly_resets_at: b.weekly_resets_at,
                 today_text: b.today_text.clone(),
                 today_title: b.today_title.clone(),
+                average_text: b.average_text.clone(),
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
                 is_dark: true,
@@ -2198,6 +2217,12 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
             &layout.today_value_rect,
             &inputs.today_text,
         );
+        if inputs.model == ProviderId::ChatGpt {
+            draw_title_line(hdc, &font_name, small_font, muted_color,
+                &layout.average_title_rect, "Media 7d da conta:");
+            draw_value_line(hdc, &font_name, layout.main_font_px + 3,
+                COLORREF(0x00FFFFFF), &layout.average_value_rect, &inputs.average_text);
+        }
 
 
         SelectObject(hdc, prev_font);
@@ -2263,6 +2288,60 @@ fn create_font(height_px: i32, name_w: &[u16], weight: i32) -> HFONT {
 }
 
 // ---------- Helpers ----------
+
+#[cfg(test)]
+mod metric_layout_tests {
+    use super::*;
+    #[test]
+    fn three_metric_pairs_fit_at_supported_sizes_and_dpis() {
+        for width in [50, 80, 120, 180, 240] {
+            for dpi in [96, 120, 144, 192] {
+                let layout = compute_bubble_layout(width, dpi, HDC::default());
+                assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
+                assert!(layout.average_value_rect.bottom <= layout.canvas_h - layout.shadow_margin,
+                    "width={width} dpi={dpi}");
+            }
+        }
+    }
+
+    #[test]
+    fn render_native_metrics_preview_when_requested() {
+        let Ok(path) = std::env::var("CODEX_WIDGET_PREVIEW_PATH") else { return };
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            let layout = compute_bubble_layout(120, 144, dc);
+            let inputs = PaintInputs {
+                model: ProviderId::ChatGpt, session_pct: Some(64.0),
+                session_text: "6 dias e 2 horas".into(), session_resets_at:None,
+                weekly_pct:Some(64.0),weekly_text:String::new(),weekly_resets_at:None,
+                today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),
+                average_text:"23.456.789 tokens/dia".into(),is_dark:true,pulse_phase:0,
+            };
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize:std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth:layout.canvas_w,biHeight:-layout.canvas_h,
+                    biPlanes:1,biBitCount:32,..Default::default()
+                }, ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut();
+            let bitmap = CreateDIBSection(dc,&bmi,DIB_RGB_COLORS,&mut bits,None,0).unwrap();
+            let previous = SelectObject(dc,bitmap);
+            let pixels = std::slice::from_raw_parts_mut(bits as *mut u32,
+                (layout.canvas_w*layout.canvas_h) as usize);
+            let mut pixmap = paint_bubble_pixmap(&layout,&inputs).unwrap();
+            copy_pixmap_to_dib(&pixmap,pixels);
+            paint_bubble_text(dc,&layout,&inputs);
+            let _ = GdiFlush();
+            restore_alpha_from_pixmap(&pixmap,pixels);
+            for (pixel,rgba) in pixels.iter().zip(pixmap.data_mut().chunks_exact_mut(4)) {
+                rgba.copy_from_slice(&[(*pixel>>16) as u8,(*pixel>>8) as u8,*pixel as u8,(*pixel>>24) as u8]);
+            }
+            pixmap.save_png(path).unwrap();
+            SelectObject(dc,previous); let _=DeleteObject(bitmap); let _=DeleteDC(dc);
+        }
+    }
+}
 
 fn default_position(width_px: i32, height_px: i32, model: ProviderId) -> (i32, i32) {
     // Bottom-right of primary work area, with a 24-pixel gap from the edges.

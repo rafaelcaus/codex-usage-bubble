@@ -45,6 +45,7 @@ const TIMER_POLL: usize = 1;
 const TIMER_COUNTDOWN: usize = 2;
 const TIMER_RESET_POLL: usize = 3;
 const TIMER_UPDATE_CHECK: usize = 4;
+const TIMER_LOCAL_USAGE: usize = 5;
 
 const APP_MUTEX_NAME: &str = r"Global\ClaudeCodeUsageBubble";
 const STARTUP_REGISTRY_PATH: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -135,7 +136,7 @@ struct ProviderUiState {
     secondary_text: String,
     /// Fork: "Falta para resetar: 6d 3h" (weekly window, precise).
     reset_text: String,
-    /// Fork: "Tokens neste PC desde o reset: 1.234.567" (local sessions).
+    /// Completed seven-day account average, including its date range.
     tokens_text: String,
     /// Fork: daily budget "%/dia" from exact remaining time.
     budget_text: String,
@@ -143,10 +144,11 @@ struct ProviderUiState {
     pace_text: String,
     /// Fork: tokens since local midnight.
     tokens_today_text: String,
-    /// Fork: compact "55,3M" for the bubble micro-line (API value only).
+    /// Exact local token count, so every recorded increase is visible.
     today_micro: String,
-    /// Fork: "Consumo hoje 24/09:" title line for the bubble.
+    /// Local date and explicit machine scope for the bubble.
     today_title: String,
+    average_micro: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -271,6 +273,8 @@ pub fn run(args: crate::AppArgs) {
     // Fork: account data worker (daily tokens via app-server). Independent
     // thread with its own 60s loop; the UI only reads its last snapshot.
     crate::appserver::start();
+    crate::local_usage::start();
+    unsafe { SetTimer(msg_hwnd, TIMER_LOCAL_USAGE, 5_000, None); }
     // Fork (Rafael): push the persisted focus-follow flag into the bubble
     // module so the 0.35s foreground check enforces it from the first tick.
     bubble::set_only_over_chatgpt(
@@ -372,6 +376,7 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         weekly_resets_at: None,
         today_text: String::new(),
         today_title: String::new(),
+        average_text: String::new(),
         is_dark,
     });
     if hwnd != HWND::default() {
@@ -473,7 +478,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
 fn on_timer(hwnd: HWND, id: usize) {
     match id {
         TIMER_POLL | TIMER_RESET_POLL => spawn_poll_thread(),
-        TIMER_COUNTDOWN => refresh_countdowns(),
+        TIMER_COUNTDOWN | TIMER_LOCAL_USAGE => refresh_countdowns(),
         TIMER_UPDATE_CHECK => {
             unsafe {
                 let _ = KillTimer(hwnd, TIMER_UPDATE_CHECK);
@@ -629,10 +634,7 @@ fn attempt_refresh(failures: Vec<ProviderId>, registry: &Arc<Mutex<Registry>>) {
     }
 }
 
-/// Fork (Rafael): weekly precise-reset + local-tokens lines for the
-/// expanded panel and tray tooltip. Token counting runs only for Codex and
-/// is fingerprint-cached inside `codex_tokens`, so the per-minute refresh
-/// stays cheap.
+/// UI formatting only: local disk scans and account reads run on workers.
 fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &LocaleStrings) {
     // Fork: boundaries use the PRIMARY window = weekly quota on Pro.
     let cd = i18n::format_precise_countdown(entry.windows.primary.resets_at, strings);
@@ -641,23 +643,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     } else {
         format!("{}: {}", strings.reset_prefix, cd)
     };
-    entry.tokens_text = if id == ProviderId::ChatGpt {
-        match entry
-            .windows
-            .primary
-            .resets_at
-            .and_then(crate::codex_tokens::tokens_since_reset)
-        {
-            Some(n) => format!(
-                "{}: {}",
-                strings.tokens_prefix,
-                crate::codex_tokens::format_tokens(n)
-            ),
-            None => format!("{}: -", strings.tokens_prefix),
-        }
-    } else {
-        format!("{}: -", strings.tokens_prefix)
-    };
+    entry.tokens_text.clear();
 
     // Daily budget: remaining % spread over the exact days left.
     entry.budget_text = match entry.windows.primary.resets_at
@@ -700,27 +686,32 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     };
 
-    // Daily account aggregate: retain the date supplied by the service.
-    // It may lag behind today and is not a real-time token counter.
-    let api = crate::appserver::latest();
     if id == ProviderId::ChatGpt {
-        if let Some((t, title, detail)) = api.daily_reading() {
-            let n = (t.max(0) as u64).min(u64::MAX);
-            entry.tokens_today_text = format!(
-                "{detail}: {}",
-                crate::codex_tokens::format_tokens(n)
-            );
-            let (num, unit) = crate::codex_tokens::format_tokens_words(t);
-            entry.today_micro = format!("{num} {unit}");
-            entry.today_title = title;
+        let today = chrono::Local::now().date_naive();
+        let local = crate::local_usage::latest();
+        entry.today_title = format!("Hoje {} neste PC:", today.format("%d/%m"));
+        if let Some(n) = local.tokens {
+            entry.tokens_today_text = format!("Hoje neste PC: {} tokens", crate::codex_tokens::format_tokens(n));
+            // Full integer: activity remains visible even below 0.1 million.
+            entry.today_micro = format!("{} tokens", crate::codex_tokens::format_tokens(n));
         } else {
-            entry.today_micro.clear();
-            entry.today_title.clear();
-            entry.tokens_today_text = "Tokens da conta: indisponiveis".into();
+            entry.today_micro = "Indisponivel".into();
+            entry.tokens_today_text = "Hoje neste PC: leitura indisponivel".into();
+        }
+        let api = crate::appserver::latest();
+        let from = today - chrono::Duration::days(7);
+        let to = today - chrono::Duration::days(1);
+        if let Some(n) = api.average_previous_week(today) {
+            entry.average_micro = format!("{} tokens/dia", crate::codex_tokens::format_tokens(n));
+            entry.tokens_text = format!("Media conta {}-{}: {}/dia", from.format("%d/%m"), to.format("%d/%m"), crate::codex_tokens::format_tokens(n));
+        } else {
+            entry.average_micro = "Indisponivel".into();
+            entry.tokens_text = "Media 7d conta: historico incompleto ou indisponivel".into();
         }
     } else {
         entry.today_micro.clear();
         entry.today_title.clear();
+        entry.average_micro.clear();
         entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
 }
@@ -809,6 +800,7 @@ fn propagate_to_ui() {
             entry
                 .map(|s| s.today_title.clone())
                 .unwrap_or_default(),
+            entry.map(|s| s.average_micro.clone()).unwrap_or_default(),
         );
     }
     refresh_tray_icons_with(&snap);

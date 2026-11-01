@@ -7,6 +7,7 @@
 // Original infrastructure.
 mod appserver;
 mod codex_tokens;
+mod local_usage;
 mod creds;
 mod diag;
 mod i18n;
@@ -26,6 +27,13 @@ mod settings;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--diagnose-local-usage") {
+        if let Err(e) = local_usage::diagnose() {
+            eprintln!("Local token reading failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let diagnose_enabled = args.iter().any(|a| a == "--diagnose");
     if diagnose_enabled {
         if let Ok(Some(path)) = diag::init(true) {

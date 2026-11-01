@@ -20,6 +20,24 @@ A floating, draggable circular bubble that shows your Claude Code and/or
 Codex usage on Windows — inspired by the floating "memory boost ball" UX
 of 360 Security and IObit Advanced SystemCare.
 
+## Contadores do fork (v0.6.7)
+
+- **Hoje DD/MM neste PC:** tokens registrados nas sessoes locais do Codex,
+  desde a meia-noite do computador. Novas leituras a cada 5 segundos.
+  Nao inclui outros computadores nem sessoes remotas que nao gravam
+  registros neste PC; nao representa uma fatura da conta.
+- **Media 7d da conta:** soma dos sete dias completos anteriores dividida
+  por sete, usando o historico diario da conta. Nao inclui hoje.
+  O painel mostra o intervalo de datas. Se faltar algum dia, mostra
+  indisponivel; um dia ausente nao e tratado como zero.
+- A porcentagem de cota continua sendo consultada na conta. As fontes
+  sao independentes; tokens locais nao sao convertidos em porcentagem.
+
+A primeira leitura local percorre o historico em segundo plano. As seguintes
+leem somente os trechos novos. Eventos repetidos e copias da mesma sessao
+arquivada nao sao somados novamente. O widget apenas le os registros;
+nao altera conversas nem credenciais.
+
 Drop it anywhere on screen, drag it around, snap it to a monitor edge,
 left-click for a panel with both your 5-hour and 7-day windows, right-click
 for the menu.

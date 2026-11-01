@@ -34,10 +34,25 @@ pub struct UsageSnapshot {
     pub daily_tokens: Option<i64>,
     pub bucket_date: Option<String>,
     pub lifetime_tokens: Option<i64>,
+    daily_buckets: Vec<(chrono::NaiveDate, i64)>,
     fetched_at: Option<Instant>,
 }
 
 impl UsageSnapshot {
+    /// Exactly the seven completed calendar dates before today. Missing is
+    /// unknown, never an implicit zero, and today's partial total is excluded.
+    pub fn average_previous_week(&self, today: chrono::NaiveDate) -> Option<u64> {
+        if self.fetched_at?.elapsed() > MAX_SAMPLE_AGE { return None; }
+        let mut sum = 0_u128;
+        for offset in 1..=7 {
+            let date = today.checked_sub_signed(chrono::Duration::days(offset))?;
+            let mut matches = self.daily_buckets.iter().filter(|(d,_)| *d == date);
+            let (_, n) = matches.next()?;
+            if matches.next().is_some() { return None; }
+            sum += *n as u128;
+        }
+        u64::try_from((sum + 3) / 7).ok()
+    }
     /// A successful read is not proof that the daily aggregate is live.
     /// Keep the service's date attached to its count, including yesterday.
     pub fn daily_reading(&self) -> Option<(i64, String, String)> {
@@ -107,6 +122,7 @@ fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
     let lifetime_tokens = v.pointer("/summary/lifetimeTokens").and_then(as_i64)
         .or_else(|| v.get("lifetimeTokens").and_then(as_i64));
     let mut best: Option<(String, i64)> = None;
+    let mut daily_buckets = Vec::new();
     if let Some(arr) = v.get("dailyUsageBuckets").and_then(|b| b.as_array()) {
         for b in arr {
             let Some(date) = b
@@ -117,6 +133,7 @@ fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
             let Some(tokens) = b.get("tokens").and_then(as_i64).filter(|n| *n >= 0)
             else { continue };
             let date = date.to_string();
+            daily_buckets.push((chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").unwrap(), tokens));
             let newer = best
                 .as_ref()
                 .map(|(d, _)| date.as_str() > d.as_str())
@@ -130,6 +147,7 @@ fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
         daily_tokens: best.as_ref().map(|(_, t)| *t),
         bucket_date: best.map(|(d, _)| d),
         lifetime_tokens,
+        daily_buckets,
         fetched_at: Some(Instant::now()),
     }
 }
@@ -419,6 +437,22 @@ mod tests {
         assert!(s.daily_reading_at(at + Duration::from_secs(60)).is_some());
         assert!(s.daily_reading_at(at + MAX_SAMPLE_AGE + Duration::from_secs(1)).is_none());
         assert!(UsageSnapshot::default().daily_reading().is_none());
+    }
+
+    #[test]
+    fn week_average_uses_seven_complete_days_and_real_zero() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026,11,1).unwrap();
+        let mut buckets: Vec<_> = (1..=7).map(|offset| serde_json::json!({
+            "startDate":(today-chrono::Duration::days(offset)).to_string(),
+            "tokens": if offset==7 {0} else {70}
+        })).collect();
+        buckets.push(serde_json::json!({"startDate":"2026-11-01","tokens":999999}));
+        buckets.push(serde_json::json!({"startDate":"2026-10-24","tokens":999999}));
+        let snapshot = parse_usage(&serde_json::json!({"dailyUsageBuckets":buckets}));
+        assert_eq!(snapshot.average_previous_week(today),Some(60));
+        buckets.remove(0);
+        assert_eq!(parse_usage(&serde_json::json!({"dailyUsageBuckets":buckets}))
+            .average_previous_week(today),None);
     }
 
     #[test]
