@@ -606,7 +606,10 @@ fn apply_results(
                     entry.windows = windows;
                     // Fork: feed the burn-rate sampler (Codex weekly only).
                     if id == ProviderId::ChatGpt {
-                        if let Some(weekly)=entry.windows.weekly() { crate::samples::record(weekly.utilization); }
+                        if let Some(weekly)=entry.windows.weekly() {
+                            crate::samples::record(weekly.utilization);
+                            crate::history::weekly(weekly.utilization, weekly.resets_at);
+                        }
                     }
                     entry.primary_text =
                         i18n::format_window_remaining(&windows.primary, &strings);

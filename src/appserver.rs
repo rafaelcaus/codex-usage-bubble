@@ -113,6 +113,7 @@ fn worker() {
 
 fn cycle(client: &Arc<Client>) -> Result<UsageSnapshot, String> {
     let v = client.request("account/usage/read", None)?;
+    crate::history::account(&v);
     Ok(parse_usage(&v))
 }
 

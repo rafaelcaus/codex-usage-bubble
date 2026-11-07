@@ -1,0 +1,28 @@
+Quota history (local build 0.6.15)
+
+Location: %APPDATA%\ClaudeCodeUsageBubble\history\YYYY-MM-DD.jsonl
+UTC observation times, schema 1. Daily files retained for 35 full days plus
+the current day. Collection runs while the widget is running. Existing
+samples.json is preserved and still supplies the short-term pace display.
+
+weekly_quota: weekly used percentage, reported reset deadline, and a fresh
+local-PC daily token reading when available (null means unknown, never zero).
+account_tokens: successful account/usage/read aggregates, including lifetime
+tokens and dated daily buckets. Only changed snapshots are appended. Aggregates
+may be delayed; their observation time is NOT an exact token execution time.
+reset_observed: deadline moved by over 60 seconds or used percentage fell by
+at least one percentage point. Contains previous and current observations.
+The previous quota observation is recovered after restart. Scheduled rollover
+is distinguished from early reset OR quota adjustment. Exact reset time and
+manual/automatic cause are not inferred, especially across offline gaps.
+
+Later calibration should compare token deltas and percentage deltas within
+one uninterrupted reset cycle, with matching account, scope and model mix.
+Do not combine local tokens with account-wide percentages as exact capacity.
+Allow for delayed daily aggregates, caching, rounding, account switches and
+quota adjustments. No fixed weekly token entitlement is claimed by this log.
+
+No credentials, conversation text or thread metadata are recorded.
+Corrupt lines are ignored only when recovering the previous quota; existing
+files are appended to, never rewritten. Write failures produce a diagnostic
+warning. The previous display and all settings remain unchanged.
