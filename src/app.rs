@@ -33,6 +33,7 @@ use crate::usage::{self, ProviderId, Registry, UsageWindows};
 
 // Win32 message IDs owned by this module.
 pub const WM_APP_USAGE_UPDATED: u32 = 0x8001;
+const WM_APP_RESCHEDULE_UPDATES:u32=0x8004;
 // Posted from the update worker thread after `install::begin` has
 // already swapped the binary on disk and spawned the new detached
 // child. The UI thread responds with PostQuitMessage(0) so the old
@@ -428,6 +429,7 @@ unsafe extern "system" fn msg_wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_COMMAND if (wparam.0 & 0xffff)==IDM_PREFERENCES as usize => { show_preferences(); LRESULT(0) }
+        WM_APP_RESCHEDULE_UPDATES => { schedule_update_check_timer(hwnd); LRESULT(0) }
         WM_APP_USAGE_UPDATED => {
             propagate_to_ui();
             LRESULT(0)
@@ -2068,20 +2070,15 @@ fn begin_update_check(hwnd: HWND) {
                 }
                 // A user can change/disable the schedule while downloading.
                 // Use the current setting, not a stale copy from the check.
-                let interval = lock_state()
-                    .as_ref()
-                    .and_then(|s| s.settings.update_check_interval_secs);
-                if let Some(interval) = interval {
-                    let ms = (interval.saturating_mul(1000).min(u32::MAX as u64)) as u32;
-                    unsafe {
-                        SetTimer(send_hwnd.to_hwnd(), TIMER_UPDATE_CHECK, ms, None);
-                    }
-                }
+                request_update_reschedule(send_hwnd.to_hwnd());
             }
         }
     });
 }
 
+fn request_update_reschedule(hwnd:HWND) {
+    unsafe {let _=PostMessageW(hwnd,WM_APP_RESCHEDULE_UPDATES,WPARAM(0),LPARAM(0));}
+}
 fn set_update_check_interval(value: Option<u64>) {
     let (snap, msg_hwnd) = {
         let mut s = lock_state();
@@ -2413,6 +2410,25 @@ mod context_menu_tests {
                 flags(IDM_SIZE_LARGER) & MF_GRAYED.0 != 0,
                 width == bubble::MAX_BUBBLE_SIZE
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_timer_dispatch_tests {
+    use super::*;
+    #[test]
+    fn completion_posts_rescheduling_to_the_window_owner() {
+        let hwnd=create_message_window().unwrap();
+        let target=SendHwnd::from_hwnd(hwnd);
+        std::thread::spawn(move ||request_update_reschedule(target.to_hwnd())).join().unwrap();
+        let mut msg=MSG::default();
+        unsafe {
+            assert!(PeekMessageW(&mut msg,hwnd,WM_APP_RESCHEDULE_UPDATES,WM_APP_RESCHEDULE_UPDATES,PM_REMOVE).as_bool());
+            assert_eq!(msg.hwnd,hwnd);
+            let _=DestroyWindow(hwnd);
+            // DestroyWindow posts quit; do not leak that message to another native test.
+            let _=PeekMessageW(&mut msg,HWND::default(),WM_QUIT,WM_QUIT,PM_REMOVE);
         }
     }
 }

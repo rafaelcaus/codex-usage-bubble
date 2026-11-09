@@ -17,4 +17,4 @@ Leia SECURITY.md para o escopo e as limitações dessa verificação. Binários 
 
 Para APIs e gateways, veja Contas e APIs: é necessária uma consulta de consumo do fornecedor, além da URL usada para gerar respostas. A chave fica no Windows de cada usuário; não compartilhe credenciais.
 
-Na v0.6.19, instalações anteriores recebem uma migração única que ativa a checagem automática a cada hora, inclusive se antes estava diária ou desativada. Depois disso o usuário pode escolher outra frequência nas configurações. A versão antiga precisa primeiro receber essa atualização; se estava no modo manual, use Atualizar aplicativo uma vez. O widget precisa estar aberto e conectado à internet.
+Na v0.6.20, instalações anteriores recebem uma migração única que ativa a checagem automática a cada hora, inclusive se antes estava diária ou desativada. Depois disso o usuário pode escolher outra frequência nas configurações. A versão antiga precisa primeiro receber essa atualização; se estava no modo manual, use Atualizar aplicativo uma vez. O widget precisa estar aberto e conectado à internet.
