@@ -1,0 +1,20 @@
+Diagnostico Claude Pro
+
+1. Extraia os arquivos do ZIP.
+2. No mesmo usuario Windows em que o widget apresenta falha, abra Diagnosticar Claude Pro.cmd.
+3. Envie somente diagnostico-claude-pro-sem-segredos.txt ao mantenedor.
+
+O script consulta apenas GET https://api.anthropic.com/api/oauth/usage usando o login local, se existir e nao estiver expirado. Nao gera respostas, nao renova login, nao modifica a conta e nao chama gateways. O relatorio registra apenas estados, HTTP e presenca/tipo dos campos: nao inclui token, chave, email, caminho pessoal ou corpo da resposta.
+
+Se usa Claude no WSL, informe isso: o perfil Linux pode nao estar disponivel para um widget Windows. Login em outro perfil ou terminal tambem pode ser diferente.
+
+Interpretacao:
+no_credentials/no_oauth_token: login de assinatura nao localizado no perfil Windows ativo.
+expired_token: credencial local expirada; confirme o login pelo Claude Code oficial.
+HTTP 401: credencial rejeitada pelo servidor.
+HTTP 403: consulta de consumo recusada; nao prova ausencia de plano Pro.
+HTTP 429: limite temporario de consultas.
+HTTP 2xx com limites presentes: investigar parser/configuracao/exibicao do widget.
+connection_failed: investigar conexao/proxy/TLS neste PC.
+
+Nao envie auth.json, .credentials.json, settings.json ou chaves por mensagem.

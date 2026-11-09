@@ -50,7 +50,7 @@ try {
             # Do not silently discard invalid existing preferences.
             $cur=Get-Content -LiteralPath $cfg -Raw|ConvertFrom-Json
         }
-        foreach($setting in @{show_codex=$true;show_claude_code=$true;show_opencode_go=$false;update_check_interval_secs=86400}.GetEnumerator()) {
+        foreach($setting in @{show_codex=$true;show_claude_code=$true;show_opencode_go=$false;update_check_interval_secs=3600;hourly_update_migrated=$true}.GetEnumerator()) {
             $cur|Add-Member -NotePropertyName $setting.Key -NotePropertyValue $setting.Value -Force
         }
         foreach($setting in @{poll_interval_ms=60000;bubble_size_logical=130;widget_visible=$true;only_over_chatgpt=$false;visible_sections=31}.GetEnumerator()) {
@@ -64,7 +64,7 @@ try {
         $shell=New-Object -ComObject WScript.Shell
         $shortcut=$shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath('Desktop')) 'CODEX e CLAUDE Widget.lnk'))
         $shortcut.TargetPath=$target;$shortcut.WorkingDirectory=$dir;$shortcut.Save()
-        Write-Host 'Instalado: CODEX + CLAUDE. Atualizacoes automaticas diarias ativas.' -ForegroundColor Green
+        Write-Host 'Instalado: CODEX + CLAUDE. Atualizacoes automaticas a cada hora ativas.' -ForegroundColor Green
         Write-Host 'Cada pessoa usa suas proprias contas. Se necessario, instale os CLIs oficiais e faca login com codex login e claude.'
         Write-Host 'Botao direito > Abrir configuracoes > Informacoes: escolha o que mostrar.'
         Write-Host 'Sem login no GitHub; sem permissao de escrita no repositorio.'

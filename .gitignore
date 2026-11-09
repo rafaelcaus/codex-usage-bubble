@@ -11,3 +11,4 @@ settings.json
 /history/
 *.log
 *.bak*
+diagnostico-*-sem-segredos.txt

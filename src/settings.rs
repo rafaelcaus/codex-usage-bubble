@@ -47,9 +47,9 @@ fn default_poll_interval_ms() -> u32 {
     POLL_5_MIN
 }
 fn default_update_check_interval_secs() -> Option<u64> {
-    // Fork: Daily. The feed points at our own repo, so auto-update only
+    // Hourly. The feed points at our own repo, so auto-update only
     // ever installs our own fork releases (safe to leave on).
-    Some(UPDATE_CHECK_DAILY_SECS)
+    Some(UPDATE_CHECK_HOURLY_SECS)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -132,6 +132,8 @@ fn position_on_any_monitor(x: i32, y: i32) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
     #[serde(default)]
+    pub hourly_update_migrated: bool,
+    #[serde(default)]
     pub codex_api: crate::external_usage::ApiConfig,
     #[serde(default)]
     pub claude_api: crate::external_usage::ApiConfig,
@@ -181,6 +183,7 @@ impl Default for Settings {
             bubble_size_logical: default_bubble_size(),
             poll_interval_ms: default_poll_interval_ms(),
             last_update_check_unix: None,
+            hourly_update_migrated: true,
             update_check_interval_secs: default_update_check_interval_secs(),
             widget_visible: default_widget_visible(),
             only_over_chatgpt: default_only_over_chatgpt(),
@@ -233,7 +236,8 @@ pub fn load() -> Settings {
         Ok(c) => c,
         Err(_) => return Settings::default(),
     };
-    let mut settings: Settings = serde_json::from_str(&content).unwrap_or_default();
+    let mut settings: Settings = serde_json::from_str(content.trim_start_matches('\u{feff}')).unwrap_or_default();
+    if migrate_hourly_updates(&mut settings) { save(&settings); }
     // At least one live provider must be visible. Otherwise the app has nothing to show.
     if !settings.has_enabled_live_provider() {
         settings.show_claude_code = true;
@@ -248,10 +252,26 @@ pub fn load() -> Settings {
     settings
 }
 
+fn migrate_hourly_updates(settings:&mut Settings)->bool {
+    if settings.hourly_update_migrated {return false}
+    settings.update_check_interval_secs=Some(UPDATE_CHECK_HOURLY_SECS);
+    settings.last_update_check_unix=None;
+    settings.hourly_update_migrated=true;
+    true
+}
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn hourly_updates_migrate_existing_preferences_once() {
+        for old in [None,Some(86400),Some(604800)] {
+            let mut s=Settings::default();s.hourly_update_migrated=false;s.update_check_interval_secs=old;
+            assert!(migrate_hourly_updates(&mut s));assert_eq!(s.update_check_interval_secs,Some(3600));
+            s.update_check_interval_secs=None;assert!(!migrate_hourly_updates(&mut s));assert_eq!(s.update_check_interval_secs,None);
+        }
+        assert_eq!(Settings::default().update_check_interval_secs,Some(3600));
+    }
     #[test]
     fn section_choices_survive_roundtrip_and_old_settings_show_everything() {
         for mask in 0..32 {

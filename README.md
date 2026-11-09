@@ -27,7 +27,7 @@ As opções valem para as duas bolhas e ficam salvas. Média da conta e resets s
 
 O atalho **Atualizar aplicativo** fica diretamente no menu do botão direito e procura/instala uma versão mais nova. A versão instalada aparece no submenu de atualizações.
 
-Ativas diariamente pelo instalador. O aplicativo procura somente releases deste fork e valida o SHA-256 informado pelo GitHub antes de substituir o executável. Configurações e histórico são preservados. Botão direito permite conferir atualizações ou mudar a frequência.
+Ativas a cada hora pelo instalador. O aplicativo procura somente releases deste fork e valida o SHA-256 informado pelo GitHub antes de substituir o executável. Configurações e histórico são preservados. Botão direito permite conferir atualizações ou mudar a frequência.
 
 ## Dados e segurança
 
@@ -61,3 +61,4 @@ A Clipoos documenta a consulta `https://clipoos.online/usage`. O formato da resp
 A nova janela reúne Geral, Informações e Contas e APIs. **Salvar alterações** aplica as escolhas; **Cancelar** descarta a edição. O menu curto mantém atualizar dados, detalhes, modo compacto e atualizar aplicativo. Recursos antigos continuam em Mais opções.
 
 O Claude usa as credenciais locais do Claude Code, incluindo perfis com `CLAUDE_CONFIG_DIR`. Login no site/aplicativo não substitui login no Claude Code. Falhas de autenticação do computador de outra pessoa exigem diagnóstico local; não são resolvidas copiando credenciais do autor.
+Na v0.6.19, instalações anteriores recebem uma migração única que ativa a checagem automática a cada hora, inclusive se antes estava diária ou desativada. Depois disso o usuário pode escolher outra frequência nas configurações. A versão antiga precisa primeiro receber essa atualização; se estava no modo manual, use Atualizar aplicativo uma vez. O widget precisa estar aberto e conectado à internet.
