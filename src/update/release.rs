@@ -68,16 +68,16 @@ pub fn fetch_latest(http: &Client) -> Result<super::CheckOutcome, super::Error> 
         .assets
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case(ASSET_NAME))
-        .or_else(|| {
-            body.assets
-                .iter()
-                .find(|a| a.name.to_ascii_lowercase().ends_with(".exe"))
-        })
         .ok_or(super::Error::NoAsset)?;
+    if !asset.browser_download_url.starts_with("https://github.com/rafaelcaus/codex-usage-bubble/releases/download/") {
+        return Err(super::Error::UnsafePath("unexpected update origin".into()));
+    }
+    let digest = asset.digest.as_deref().and_then(parse_sha256_digest)
+        .ok_or_else(|| super::Error::UnsafePath("release missing SHA-256 digest".into()))?;
     Ok(super::CheckOutcome::Available(Release {
         version: candidate,
         asset_url: asset.browser_download_url.clone(),
-        asset_sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
+        asset_sha256: Some(digest),
     }))
 }
 

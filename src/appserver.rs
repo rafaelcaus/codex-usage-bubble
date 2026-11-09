@@ -168,6 +168,12 @@ fn codex_candidates() -> Vec<PathBuf> {
             }
         }
     }
+    // Prefer npm's native executable: logon sessions may not resolve node or
+    // .cmd shims. No credentials or machine-specific paths are distributed.
+    if let Some(home) = dirs::home_dir() {
+        let native = home.join("AppData/Roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe");
+        if native.is_file() { out.push(native); }
+    }
     // Whatever `codex` resolves to on PATH (npm shim .cmd included).
     let mut where_cmd = Command::new("where.exe");
     where_cmd.arg("codex");

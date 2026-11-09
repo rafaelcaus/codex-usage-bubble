@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -102,7 +102,16 @@ fn bubble_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bo
     bubble_content_height_logical(width_logical,dual,credits,compact) + 2 * SHADOW_MARGIN_LOGICAL
 }
 
+static VISIBLE_SECTIONS: AtomicU8 = AtomicU8::new(31);
+pub fn set_visible_sections(mask: u8) {
+    VISIBLE_SECTIONS.store(mask & 31, Ordering::Relaxed);
+    let windows: Vec<_> = lock_bubbles().iter().map(|(h,b)| (HWND(*h as *mut _), b.compact)).collect();
+    for (hwnd, compact) in windows { set_compact(hwnd, compact); }
+}
 fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bool) -> i32 {
+    content_height(width_logical,dual,credits,compact,VISIBLE_SECTIONS.load(Ordering::Relaxed))
+}
+fn content_height(width_logical: i32, dual:bool, credits:bool, compact:bool, mask:u8) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
@@ -111,8 +120,11 @@ fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool, co
     // Renewal, optional second quota, local activity and account average.
     let th = small + 2;
     let vh = small + 5;
-    if compact { return pad+ring+g1+22+pad+4; }
-    pad + ring + g1 + (3 + i32::from(dual)+i32::from(credits)) * (th + 2 + vh) + (2 + i32::from(dual)+i32::from(credits)) * 4 + pad + 4 + 26
+    let header = (width_logical * 14 / 100).max(12) + 4;
+    if compact { return header+pad+ring+g1+22+pad+4; }
+    let rows = i32::from(mask & 1 != 0) + i32::from(dual && mask & 2 != 0)
+        + i32::from(credits && mask & 4 != 0) + i32::from(credits && mask & 8 != 0) + i32::from(credits && mask & 16 != 0);
+    header + pad + ring + g1 + rows * (th + 2 + vh + 4) + pad + 4 + 22
 }
 
 fn remaining_fraction(resets_at: Option<SystemTime>, duration_secs: u64) -> Option<f32> {
@@ -1550,6 +1562,7 @@ struct BubbleLayout {
     ring_stroke_w: f32,
     time_ring_radius: f32,
     time_ring_stroke_w: f32,
+    provider_rect: RECT,
     resta_label_rect: RECT,
     pct_rect: RECT,
     reset_title_rect: RECT,
@@ -1570,14 +1583,18 @@ struct BubbleLayout {
 }
 
 fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool, compact:bool) -> BubbleLayout {
+    layout_with_sections(size_logical,dpi,mem_dc,dual,credits,compact,VISIBLE_SECTIONS.load(Ordering::Relaxed))
+}
+fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool, compact:bool, mask:u8) -> BubbleLayout {
     // Content box (the visible card). The canvas adds a shadow margin all
     // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(bubble_content_height_logical(size_logical,dual,credits,compact), dpi);
+    let height_px = scale_to_dpi(content_height(size_logical,dual,credits,compact,mask), dpi);
     let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let canvas_w = width_px + 2 * margin_px;
     let canvas_h = height_px + 2 * margin_px;
-    let (ox, oy) = (margin_px, margin_px);
+    let header_px = scale_to_dpi((size_logical * 14 / 100).max(12) + 4, dpi);
+    let (ox, oy) = (margin_px, margin_px + header_px);
     let pad = (width_px * 6 / 100).max(1);
     let ring_d = width_px - 2 * pad;
 
@@ -1626,49 +1643,60 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cr
     let pair_gap = scale_to_dpi(4, dpi);
     let line_gap = scale_to_dpi(2, dpi);
     let mut ty = oy + pad + ring_d + ring_gap;
-    let reset_title_rect = RECT {
+    let mut reset_title_rect = RECT {
         left: ox + pad,
         top: ty,
         right: ox + width_px - pad,
         bottom: ty + title_h,
     };
     ty += title_h + line_gap;
-    let countdown_rect = RECT {
+    let mut countdown_rect = RECT {
         left: ox + pad,
         top: ty,
         right: ox + width_px - pad,
         bottom: ty + value_h,
     };
     ty += value_h + pair_gap;
-    let secondary_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
-    let secondary_value_rect=RECT {left:ox+pad,top:ty+title_h+line_gap,right:ox+width_px-pad,bottom:ty+title_h+line_gap+value_h};
+    let mut secondary_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
+    let mut secondary_value_rect=RECT {left:ox+pad,top:ty+title_h+line_gap,right:ox+width_px-pad,bottom:ty+title_h+line_gap+value_h};
     if dual { ty+=title_h+line_gap+value_h+pair_gap; }
-    let today_title_rect = RECT {
+    let mut today_title_rect = RECT {
         left: ox + pad,
         top: ty,
         right: ox + width_px - pad,
         bottom: ty + title_h,
     };
     ty += title_h + line_gap;
-    let today_value_rect = RECT {
+    let mut today_value_rect = RECT {
         left: ox + pad,
         top: ty,
         right: ox + width_px - pad,
         bottom: ty + value_h,
     };
     ty += value_h + pair_gap;
-    let average_title_rect = RECT {
+    let mut average_title_rect = RECT {
         left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + title_h,
     };
     ty += title_h + line_gap;
-    let average_value_rect = RECT {
+    let mut average_value_rect = RECT {
         left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + value_h,
     };
     ty+=value_h+pair_gap;
-    let credits_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
+    let mut credits_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
     ty+=title_h+line_gap;
-    let credits_value_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+value_h};
-    let toggle_top=if compact {oy+pad+ring_d+ring_gap} else if credits {credits_value_rect.bottom+pair_gap} else {average_value_rect.bottom+pair_gap};
+    let mut credits_value_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+value_h};
+    let mut packed_y=oy+pad+ring_d+ring_gap;
+    for (visible,title,value) in [
+        (mask&1!=0,&mut reset_title_rect,&mut countdown_rect),
+        (dual && mask&2!=0,&mut secondary_title_rect,&mut secondary_value_rect),
+        (credits && mask&4!=0,&mut today_title_rect,&mut today_value_rect),
+        (credits && mask&8!=0,&mut average_title_rect,&mut average_value_rect),
+        (credits && mask&16!=0,&mut credits_title_rect,&mut credits_value_rect)] {
+        if visible { title.top=packed_y;title.bottom=packed_y+title_h;
+            value.top=title.bottom+line_gap;value.bottom=value.top+value_h;packed_y=value.bottom+pair_gap; }
+        else { *title=RECT::default();*value=RECT::default(); }
+    }
+    let toggle_top=if compact {oy+pad+ring_d+ring_gap} else {packed_y};
     let toggle_rect=RECT {left:ox+pad,top:toggle_top,right:ox+width_px-pad,bottom:toggle_top+scale_to_dpi(22,dpi)};
     let _ = mem_dc;
 
@@ -1683,6 +1711,7 @@ fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cr
         ring_stroke_w,
         time_ring_radius,
         time_ring_stroke_w,
+        provider_rect: RECT { left: margin_px, top: margin_px + 2, right: canvas_w - margin_px, bottom: margin_px + header_px },
         resta_label_rect,
         pct_rect,
         reset_title_rect,
@@ -2216,7 +2245,7 @@ fn brighten(c: Color, t: f64) -> Color {
 /// Title line: small semibold muted, centered. Skips empty text.
 #[allow(clippy::too_many_arguments)]
 fn draw_title_line(hdc: HDC, _font_name: &[u16], font: HFONT, color: Color, rect: &RECT, text: &str) {
-    if text.is_empty() {
+    if text.is_empty() || rect.bottom <= rect.top || rect.right <= rect.left {
         return;
     }
     unsafe {
@@ -2236,7 +2265,7 @@ fn draw_value_line(
     rect: &RECT,
     text: &str,
 ) {
-    if text.is_empty() {
+    if text.is_empty() || rect.bottom <= rect.top || rect.right <= rect.left {
         return;
     }
     let avail = (rect.right - rect.left).max(0);
@@ -2276,6 +2305,8 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
 
         let prev_font = SelectObject(hdc, small_font);
 
+        let provider = match inputs.model { ProviderId::ChatGpt => "CODEX", ProviderId::Claude => "CLAUDE", ProviderId::OpenCodeGo => "OPENCODE" };
+        draw_title_line(hdc, &font_name, small_font, text_color, &layout.provider_rect, provider);
         // "RESTA": full-contrast so it stays readable at tiny sizes.
         SetTextColor(hdc, COLORREF(text_color.into_colorref()));
         draw_text_in_rect(hdc, &layout.resta_label_rect, &format!("{} RESTA",inputs.quota_label), DT_CENTER);
@@ -2496,6 +2527,23 @@ mod metric_layout_tests {
         }
     }
     #[test]
+    fn optional_sections_pack_without_overlap_at_all_dpis() {
+        for mask in 0..32 {
+            for width in [50,130,240] { for dpi in [96,144,192] {
+                let l=layout_with_sections(width,dpi,HDC::default(),true,true,false,mask);
+                let pairs=[(&l.reset_title_rect,&l.countdown_rect),(&l.secondary_title_rect,&l.secondary_value_rect),(&l.today_title_rect,&l.today_value_rect),(&l.average_title_rect,&l.average_value_rect),(&l.credits_title_rect,&l.credits_value_rect)];
+                let mut previous=0;
+                for (i,(title,value)) in pairs.iter().enumerate() {
+                    if mask & (1<<i)!=0 {assert!(title.top>previous);assert!(value.top>=title.bottom);previous=value.bottom;}
+                    else {assert_eq!(title.bottom,0);assert_eq!(value.bottom,0);}
+                }
+                assert!(l.toggle_rect.top>previous);
+                assert!(l.toggle_rect.bottom<=l.canvas_h-l.shadow_margin,"mask={mask} width={width} dpi={dpi}");
+                assert!(l.provider_rect.bottom<l.resta_label_rect.top);
+            }}
+        }
+    }
+    #[test]
     fn dragging_does_not_become_a_compact_toggle() {
         assert!(!gesture_is_drag(Some((100,100)),(103,102)));
         assert!(gesture_is_drag(Some((100,100)),(108,100)));
@@ -2523,9 +2571,10 @@ mod metric_layout_tests {
             let dc = CreateCompatibleDC(None);
             let dual=std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref()!=Ok("single");
             let compact=std::env::var("CODEX_WIDGET_PREVIEW_COMPACT").as_deref()==Ok("1");
-            let layout = compute_bubble_layout(120, 144, dc,dual,true,compact);
+            let mask=std::env::var("CODEX_WIDGET_PREVIEW_SECTIONS").ok().and_then(|s|s.parse().ok()).unwrap_or(31);
+            let layout = layout_with_sections(120, 144, dc,dual,true,compact,mask);
             let inputs = PaintInputs {
-                model: ProviderId::ChatGpt, session_pct: Some(64.0),
+                model: if std::env::var("CODEX_WIDGET_PREVIEW_PROVIDER").as_deref()==Ok("claude") {ProviderId::Claude} else {ProviderId::ChatGpt}, session_pct: Some(64.0),
                 session_text: if dual {"2 horas e 30 minutos"}else{"6 dias e 2 horas"}.into(), session_resets_at:None,
                 weekly_pct:if dual {Some(20.0)}else{None},weekly_text:"6 dias e 2 horas".into(),weekly_resets_at:None,
                 today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),

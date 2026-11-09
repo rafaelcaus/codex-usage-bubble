@@ -91,6 +91,7 @@ fn download(
     to: &Path,
     expected_sha256: Option<&[u8; 32]>,
 ) -> Result<(), super::Error> {
+    if expected_sha256.is_none() { return Err(super::Error::UnsafePath("missing update digest".into())); }
     let resp = http
         .get(url)
         .header("User-Agent", super::release::user_agent())

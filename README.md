@@ -1,240 +1,49 @@
-![Windows](https://img.shields.io/badge/platform-Windows-blue)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+# CODEX + CLAUDE Widget para Windows
 
-# Claude Code Usage Bubble
+Widget flutuante com duas bolhas identificadas: **CODEX** e **CLAUDE**.
+Cada pessoa consulta suas próprias contas, autenticadas pelos CLIs oficiais.
 
-> **Fork pessoal (Codex: limites informados pela conta)** — ver [FORK.md](FORK.md)
-> para a lista de mudancas. Upstream:
-> https://github.com/tiennm99/claude-code-usage-bubble (Apache-2.0).
+## Instalação fácil
 
-## ⬇ Baixar para Windows (sempre a versao mais nova)
+1. [Baixe o ZIP oficial](https://github.com/rafaelcaus/codex-usage-bubble/releases/latest/download/Codex-Claude-Widget-Windows.zip).
+2. Extraia a pasta inteira e abra **Instalar Widget.cmd**.
+3. O instalador verifica SHA-256, instala somente no perfil do usuário e cria um atalho na área de trabalho. Não precisa de administrador nem de login no GitHub.
+4. Instale os CLIs oficiais dos serviços que pretende consultar e faça seu próprio login. O instalador não instala CLIs nem solicita senhas.
 
-**[claude-code-usage-bubble.exe — baixar latest](https://github.com/rafaelcaus/codex-usage-bubble/releases/latest/download/claude-code-usage-bubble.exe)**
+Codex e Claude ficam habilitados. Se uma conta não estiver conectada, seus dados podem aparecer indisponíveis; isso não impede o outro serviço de funcionar.
 
-> Este link baixa **sempre a release mais recente publicada aqui**:
-> cada versao nova que eu soltar atualiza o download automaticamente.
-> Instalacao em outro PC: siga o [COMO INSTALAR](<COMO INSTALAR.md>)
-> (1 comando no PowerShell faz tudo sozinho).
+## Escolher o que aparece
 
-A floating, draggable circular bubble that shows your Claude Code and/or
-Codex usage on Windows — inspired by the floating "memory boost ball" UX
-of 360 Security and IObit Advanced SystemCare.
+Botão direito na bolha → **Configurações → Informações no widget**:
+- Quando renova.
+- Segundo limite, quando fornecido pelo serviço.
+- Uso de hoje em tokens do Codex.
+- Média de 7 dias do Codex.
+- Resets disponíveis do Codex.
 
-## Modo compacto (v0.6.13)
+As opções valem para as duas bolhas e ficam salvas. Média da conta e resets são recursos do Codex; valores não suportados pelo Claude não são inventados. O cartão se ajusta ao conteúdo. Modo compacto mantém o nome e o anel.
 
-Clique dentro do círculo ou em **Ver menos** para recolher os textos,
-deixando só o círculo e **Ver mais**. Clique no círculo ou em **Ver mais**
-para expandir novamente. Um clique normal (pressionar e soltar) basta; não é necessário segurar. Ver mais/Ver menos são textos discretos, sem fundo destacado. A escolha é salva para a próxima abertura.
+## Atualizações automáticas
 
-O arraste continua movendo o widget nos dois modos. Os dados continuam
-sendo consultados durante o modo compacto. **Exibição e tamanho > Modo
-compacto** também alterna a visualização; **Ver detalhes do consumo** no
-menu abre o painel completo. No modo compacto, o círculo mostra o primeiro
-limite; expanda para ver os demais limites e informações.
+Ativas diariamente pelo instalador. O aplicativo procura somente releases deste fork e valida o SHA-256 informado pelo GitHub antes de substituir o executável. Configurações e histórico são preservados. Botão direito permite conferir atualizações ou mudar a frequência.
 
-## Resets disponíveis na conta (v0.6.11)
+## Dados e segurança
 
-O rodapé do widget mostra a quantidade de resets disponíveis e um resumo da
-validade. O painel de consumo e o menu **Resets do Codex** mostram os detalhes
-fornecidos pela conta, com datas e horas no fuso do computador. A consulta
-ocorre a cada minuto e apenas lê os créditos; não os utiliza.
+Leia [SECURITY.md](SECURITY.md). O aplicativo usa credenciais já existentes dos CLIs no próprio computador. Não distribui contas do autor, tokens GitHub ou senhas. Configurações e histórico ficam em `%APPDATA%\ClaudeCodeUsageBubble`; o executável fica em `%LOCALAPPDATA%\ClaudeCodeUsageBubble`.
 
-- Quantidade zero só aparece quando a fonte informa zero.
-- **Sem vencimento** só aparece quando a fonte declara que os créditos não expiram.
-- **Validade não informada** indica que a conta não forneceu os detalhes necessários.
-- Um asterisco indica datas parciais. A quantidade da conta é mantida mesmo quando a lista de detalhes vem limitada.
-- Se uma data já passou, o widget indica que a validade precisa de nova consulta em vez de apresentar aquela validade como futura.
-- Falhas de consulta e leituras antigas aparecem como informação indisponível.
+Histórico Codex com 35 dias de retenção: veja [HISTORY.txt](HISTORY.txt). Registra percentual, tokens e mudanças de ciclo enquanto o aplicativo está aberto. Não é uma franquia fixa em tokens.
 
-A validade de um reset disponível é diferente do prazo normal de renovação
-da cota mostrado nos círculos.
+## Desenvolvimento
 
-## Atualização automática (v0.6.10)
-
-Em **Atualizações do programa**, **Buscar nova atualização (vX.Y.Z)** procura,
-baixa, valida e instala uma versão nova sem pedir outro clique. O widget
-reinicia atualizado e conserva suas preferências. O mesmo fluxo é usado
-nos horários configurados em **Atualização automática**. **Somente ao buscar
-pelo menu** desativa a programação, mantendo a atualização pela busca manual.
-
-É necessário instalar a v0.6.10 uma vez para ativar esse comportamento;
-versões anteriores ainda usam o fluxo antigo de dois cliques. Uma consulta
-sem novidade não reinstala o programa. Em caso de falha, o menu informa o
-problema e permite tentar novamente.
-
-## Limites da conta (v0.6.9)
-
-O widget identifica a duracao de cada limite na resposta da conta. Quando
-existem janelas de 5 horas e 7 dias, mostra as duas porcentagens restantes
-e os dois prazos de renovacao, no widget e no painel. Quando a conta informa
-somente o semanal, mostra uma unica janela, sem duplicacao.
-
-A regra depende dos limites retornados, nao do nome do plano. Uma janela
-ausente nao aparece como 100% livre; uma duracao desconhecida nao e rotulada
-como 5 horas ou 7 dias por suposicao. O icone perto do relogio e os avisos
-consideram a maior porcentagem usada entre as janelas. A projecao semanal
-usa apenas a janela identificada como sete dias; seu historico de amostras
-comeca novamente nesta versao para nao misturar a antiga leitura de 5 horas.
-
-## Contadores do fork (v0.6.7)
-
-- **Hoje DD/MM neste PC:** tokens registrados nas sessoes locais do Codex,
-  desde a meia-noite do computador. Novas leituras a cada 5 segundos.
-  Nao inclui outros computadores nem sessoes remotas que nao gravam
-  registros neste PC; nao representa uma fatura da conta.
-- **Media 7d da conta:** soma dos sete dias completos anteriores dividida
-  por sete, usando o historico diario da conta. Nao inclui hoje.
-  O painel mostra o intervalo de datas. Se faltar algum dia, mostra
-  indisponivel; um dia ausente nao e tratado como zero.
-- A porcentagem de cota continua sendo consultada na conta. As fontes
-  sao independentes; tokens locais nao sao convertidos em porcentagem.
-
-A primeira leitura local percorre o historico em segundo plano. As seguintes
-leem somente os trechos novos. Eventos repetidos e copias da mesma sessao
-arquivada nao sao somados novamente. O widget apenas le os registros;
-nao altera conversas nem credenciais.
-
-Drop it anywhere on screen, drag it around, snap it to a monitor edge,
-click the circle to collapse or expand the information; right-click for
-the menu and choose **Ver detalhes do consumo** for the full panel.
-
-## Acknowledgements
-
-Inspired by [CodeZeno/Claude-Code-Usage-Monitor](https://github.com/CodeZeno/Claude-Code-Usage-Monitor),
-which solves the same "how close am I to the Claude Code limit?" problem
-with a horizontal taskbar widget. This project takes the UX in a different
-direction — a floating, draggable circular bubble that the user can place
-anywhere on screen — and is a clean-room implementation: the HTTP client,
-provider polling, credential discovery, tray rendering, and
-self-updater are all written from scratch against the same public APIs
-(Anthropic, ChatGPT, GitHub Releases).
-
-## What you get
-
-- A circular floating bubble showing your current 5-hour Claude Code or
-  Codex usage as a percentage and a colored progress ring
-- Drag anywhere — the bubble snaps to monitor work-area edges when
-  released
-- Resize with `Ctrl + MouseWheel` on the bubble, or use **Controls** →
-  **Make smaller / Make larger / Reset size** from the right-click menu
-  (140–360 logical pixels)
-- Click the circle or **Ver mais/Ver menos** to collapse or expand the text.
-  Open **Ver detalhes do consumo** in the context menu for the full panel.
-- Right-click for refresh, displayed providers, update frequency, startup,
-  updates, exit
-- Optional system tray icons (one per enabled provider)
-- Auto-hide when a fullscreen app is in the foreground (games, video,
-  presentations) — reappears when you leave fullscreen
-
-## Who this is for
-
-Windows 10/11 users who already have **Claude Code (CLI or App) installed
-and signed in on Windows**. Codex support is optional — install and sign in
-to the Codex CLI, then enable Codex from the right-click **Providers** menu.
-
-## Requirements
-
-- Windows 10 or Windows 11
-- Claude Code (CLI or App) installed and authenticated
-- Optional: Codex CLI installed and authenticated, if you want Codex usage
-
-## Install
-
-### Download the latest release
-
-Grab `claude-code-usage-bubble.exe` from the
-[Releases page](https://github.com/tiennm99/claude-code-usage-bubble/releases/latest).
-Put it anywhere on disk (e.g. `%LOCALAPPDATA%\ClaudeCodeUsageBubble\`) and
-run it. The app self-updates from the same Releases feed.
-
-**First-run note:** the binary is unsigned, so SmartScreen will show
-"Windows protected your PC". Click **More info** → **Run anyway**. Code
-signing is on the roadmap.
-
-### Build from source
+Rust/Win32, Windows x64 e ferramentas MSVC/Windows SDK.
 
 ```powershell
-git clone https://github.com/tiennm99/claude-code-usage-bubble
-cd claude-code-usage-bubble
-cargo build --release
+cargo test --release --locked
+cargo build --release --locked
+.\package.ps1
 ```
 
-The binary lands at `target/release/claude-code-usage-bubble.exe`.
+O pacote sai em `dist/Codex-Claude-Widget-Windows.zip`. O empacotador usa uma lista fechada de arquivos; não inclui dados do perfil, credenciais, `.git`, backups ou logs.
 
-## Use
-
-Run `claude-code-usage-bubble.exe`. The bubble appears near the bottom-right
-corner of your primary monitor on first launch. Drag it where you want it,
-release to snap to the nearest edge if you let go close to one.
-
-- **Click the circle** or **Ver mais/Ver menos** to toggle the compact view.
-  Use **Ver detalhes do consumo** in the context menu to open the full panel.
-- **Right-click** for refresh, providers, refresh frequency, "Start with
-  Windows", controls, auto-update check (Disabled / Hourly / Daily / Weekly),
-  manual "Check for updates", exit
-- **Drag** anywhere — it floats on top of all other windows
-- **Ctrl + MouseWheel** on the bubble, or **Controls** in the right-click
-  menu, to resize it
-- **Tray icon** (if enabled): left-click toggles the bubble visibility,
-  right-click opens the same menu
-
-### Providers
-
-Use the right-click **Providers** menu to choose what is shown:
-
-- **Claude Code** is enabled by default
-- **Codex** can be enabled alongside Claude Code or shown by itself
-- **OpenCode Go** is listed for future support; usage bars remain disabled
-  until OpenCode exposes a stable quota source or console integration is
-  explicitly enabled
-
-When multiple providers are shown, each gets its own bubble that you can position
-independently.
-
-## Diagnostics
-
-```powershell
-claude-code-usage-bubble.exe --diagnose
-```
-
-This writes a log file to:
-
-```text
-%TEMP%\claude-code-usage-bubble.log
-```
-
-Settings are saved to:
-
-```text
-%APPDATA%\ClaudeCodeUsageBubble\settings.json
-```
-
-## Privacy and security
-
-What the app reads:
-
-- Your local Claude Code OAuth credentials from `~/.claude/.credentials.json`
-- If Codex is enabled, your local Codex credentials from `$CODEX_HOME/auth.json`
-  or `~/.codex/auth.json`
-
-What the app sends over the network:
-
-- Requests to Anthropic's Claude endpoints to read your usage
-- Requests to ChatGPT's Codex usage endpoint, if Codex is enabled
-- Requests to GitHub only if you use the app's update-check feature
-
-What the app stores locally:
-
-- Bubble position(s) per model
-- Bubble size
-- Polling frequency
-- Last update check time
-- Displayed provider preferences
-
-What it does **not** do: send credentials to any third-party server, run a
-backend service, collect analytics, upload your project files, or write to
-your Codex `auth.json` directly.
-
-## License
-
-Apache License 2.0 — see [LICENSE](LICENSE).
+Fork: [rafaelcaus/codex-usage-bubble](https://github.com/rafaelcaus/codex-usage-bubble).
+Derivado de [tiennm99/claude-code-usage-bubble](https://github.com/tiennm99/claude-code-usage-bubble), licença Apache-2.0. O nome interno do executável continua `claude-code-usage-bubble.exe` por compatibilidade.

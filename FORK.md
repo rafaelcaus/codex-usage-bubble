@@ -1,3 +1,6 @@
+> Distribuição v0.6.16: agora CODEX e CLAUDE são ativados juntos em instalação nova.
+> As instruções atuais de instalação estão no README.md e em COMO INSTALAR.md.
+> O texto abaixo mantém o histórico de decisões do fork; padrões antigos podem ter mudado.
 # Fork — Codex semanal (Pro)
 
 Fork pessoal de

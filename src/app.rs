@@ -352,6 +352,8 @@ fn create_message_window() -> Option<HWND> {
 }
 
 fn create_initial_bubbles() {
+    let mask=lock_state().as_ref().map(|s|s.settings.visible_sections).unwrap_or(31);
+    bubble::set_visible_sections(mask);
     let (settings, is_dark) = match lock_state().as_ref() {
         Some(s) => (s.settings.clone(), s.is_dark),
         None => return,
@@ -439,6 +441,11 @@ fn on_bubble_click(hwnd: HWND, model: ProviderId, point:POINT) {
     panel::toggle(data, hwnd);
 }
 
+fn toggle_section(section:u16) {
+    update_settings(|s|s.settings.visible_sections ^= 1 << section);
+    let mask=lock_state().as_ref().map(|s|s.settings.visible_sections).unwrap_or(31);
+    bubble::set_visible_sections(mask);
+}
 fn toggle_compact_mode() {
     update_settings(|s|s.settings.compact_mode=!s.settings.compact_mode);
     let snapshot=lock_state().as_ref().map(|s|(s.settings.compact_mode,s.bubbles.values().copied().collect::<Vec<_>>()));
@@ -478,6 +485,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_VERSION_ACTION => check_updates_now(),
         IDM_HELP => show_help(_owner_hwnd),
         IDM_COMPACT => toggle_compact_mode(),
+        70..=74 => toggle_section(id - 70),
         IDM_DETAILS => {
             if let Some(model)=bubble::model(_owner_hwnd) { panel::toggle(build_panel_data(model),_owner_hwnd); }
         },
@@ -1118,6 +1126,7 @@ fn announce_update_applied(_msg_hwnd: HWND, version: &str) {
 // ---------- Context menu ----------
 
 struct ContextMenuSnapshot {
+    visible_sections:u8,
     strings: LocaleStrings,
     current_interval: u32,
     update_check_interval_secs: Option<u64>,
@@ -1184,6 +1193,10 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
         &format!("{} (indisponível)", text.opencode_go_label), MF_GRAYED | checked(snap.show_opencode_go));
 
     let settings_menu = add_submenu(root, &text.settings)?;
+    let sections=add_submenu(settings_menu,"Informações no widget")?;
+    for (bit,label) in ["Quando renova","Segundo limite (se disponível)","Uso de hoje em tokens (Codex)","Média de 7 dias (Codex)","Resets disponíveis (Codex)"].iter().enumerate() {
+        append_item(sections,70+bit as u16,label,checked(snap.visible_sections & (1<<bit)!=0));
+    }
     append_item(settings_menu, IDM_START_WITH_WINDOWS, &text.start_with_windows, checked(startup_enabled));
     let frequency = add_submenu(settings_menu, &text.update_frequency)?;
     for (id, interval, label) in [
@@ -1231,6 +1244,7 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
 fn show_context_menu(owner_hwnd: HWND) {
     let snap = match lock_state().as_ref() {
         Some(s) => ContextMenuSnapshot {
+            visible_sections:s.settings.visible_sections,
             strings:s.i18n.strings().clone(),current_interval:s.settings.poll_interval_ms,
             update_check_interval_secs:s.settings.update_check_interval_secs,
             show_claude:s.settings.show_claude_code,show_chatgpt:s.settings.show_codex,
@@ -1669,8 +1683,18 @@ mod context_menu_tests {
             }
         }
     }
+    #[test]
+    fn section_menu_checkmarks_follow_saved_choices() {
+        for mask in 0..32 {
+            let mut s=snapshot(UpdateStatus::Idle);s.visible_sections=mask;
+            let menu=build_context_menu(&s,false).unwrap();let mut items=Vec::new();inventory(menu.0,"",&mut items);
+            for bit in 0..5 { let item=items.iter().find(|e|e.id==70+bit).unwrap();
+                assert_eq!(item.flags & MF_CHECKED.0 != 0,mask & (1<<bit)!=0); }
+        }
+    }
     fn snapshot(status:UpdateStatus)->ContextMenuSnapshot {
         ContextMenuSnapshot {
+            visible_sections:31,
             strings:i18n::I18n::load().strings().clone(),current_interval:POLL_5_MIN,
             update_check_interval_secs:Some(settings::UPDATE_CHECK_DAILY_SECS),
             show_claude:false,show_chatgpt:true,show_opencode_go:false,widget_visible:true,

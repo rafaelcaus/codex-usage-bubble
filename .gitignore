@@ -1,1 +1,13 @@
 /target
+
+/dist/
+*.local.log
+
+.env
+.env.*
+auth.json
+.credentials.json
+settings.json
+/history/
+*.log
+*.bak*

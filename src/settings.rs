@@ -29,7 +29,7 @@ fn default_show_claude() -> bool {
     true
 }
 fn default_show_codex() -> bool {
-    false
+    true
 }
 fn default_show_opencode_go() -> bool {
     false
@@ -38,7 +38,7 @@ fn default_widget_visible() -> bool {
     true
 }
 fn default_only_over_chatgpt() -> bool {
-    true
+    false
 }
 fn default_bubble_size() -> i32 {
     DEFAULT_BUBBLE_SIZE
@@ -131,6 +131,8 @@ fn position_on_any_monitor(x: i32, y: i32) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default = "default_visible_sections")]
+    pub visible_sections: u8,
     #[serde(default)]
     pub compact_mode: bool,
     #[serde(default = "default_show_claude")]
@@ -157,9 +159,12 @@ pub struct Settings {
     pub only_over_chatgpt: bool,
 }
 
+fn default_visible_sections() -> u8 { 31 }
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            visible_sections: default_visible_sections(),
             show_claude_code: default_show_claude(),
             compact_mode: false,
             show_codex: default_show_codex(),
@@ -239,6 +244,16 @@ pub fn load() -> Settings {
 mod tests {
     use super::*;
 
+    #[test]
+    fn section_choices_survive_roundtrip_and_old_settings_show_everything() {
+        for mask in 0..32 { let mut s=Settings::default();s.visible_sections=mask;
+            let restored:Settings=serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(restored.visible_sections,mask);
+        }
+        let old:Settings=serde_json::from_str("{}").unwrap();
+        assert_eq!(old.visible_sections,31);
+        assert!(old.show_claude_code && old.show_codex);
+    }
     #[test]
     fn old_two_provider_settings_json_still_loads() {
         let json = r#"{

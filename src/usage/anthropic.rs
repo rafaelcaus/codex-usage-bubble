@@ -52,21 +52,9 @@ impl UsageProvider for ClaudeProvider {
 }
 
 fn fetch_with_fallback(http: &Client, token: &str) -> Result<UsageWindows, Error> {
-    // First try the dedicated endpoint.
-    match try_usage_endpoint(http, token)? {
-        Some(windows) if has_reset_times(&windows) => return Ok(windows),
-        Some(partial) => {
-            // Got percentages but no reset times — fill them in from messages.
-            if let Ok(fallback) = try_messages_endpoint(http, token) {
-                return Ok(merge_resets(partial, fallback));
-            }
-            return Ok(partial);
-        }
-        None => {}
-    }
-    try_messages_endpoint(http, token)
+    // A monitoring widget must not send a billable model prompt as a probe.
+    try_usage_endpoint(http, token)?.ok_or_else(|| Error::BadResponse("Claude usage endpoint unavailable".into()))
 }
-
 fn try_usage_endpoint(http: &Client, token: &str) -> Result<Option<UsageWindows>, Error> {
     let resp = match http
         .get(USAGE_URL)

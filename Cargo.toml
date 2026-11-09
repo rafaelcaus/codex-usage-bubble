@@ -1,11 +1,11 @@
 [package]
 name = "claude-code-usage-bubble"
-version = "0.6.15"
+version = "0.6.16"
 edition = "2021"
 license = "Apache-2.0"
 description = "Floating bubble showing Claude Code and Codex usage on Windows"
-homepage = "https://github.com/tiennm99/claude-code-usage-bubble"
-repository = "https://github.com/tiennm99/claude-code-usage-bubble"
+homepage = "https://github.com/rafaelcaus/codex-usage-bubble"
+repository = "https://github.com/rafaelcaus/codex-usage-bubble"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
