@@ -74,6 +74,7 @@ const IDM_VERSION_ACTION: u16 = 32;
 const IDM_HELP: u16 = 39;
 const IDM_COMPACT: u16 = 40;
 const IDM_DETAILS: u16 = 41;
+const IDM_QUICK_UPDATE: u16 = 42;
 const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
@@ -482,7 +483,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_START_WITH_WINDOWS => toggle_startup(),
         IDM_ONLY_CHATGPT => toggle_only_over_chatgpt(),
         IDM_RESET_POSITION => reset_positions(),
-        IDM_VERSION_ACTION => check_updates_now(),
+        IDM_VERSION_ACTION | IDM_QUICK_UPDATE => check_updates_now(),
         IDM_HELP => show_help(_owner_hwnd),
         IDM_COMPACT => toggle_compact_mode(),
         70..=74 => toggle_section(id - 70),
@@ -1171,6 +1172,8 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
     let text = &snap.strings;
     append_item(root, IDM_REFRESH, &text.refresh, MENU_ITEM_FLAGS(0));
     append_item(root,IDM_DETAILS,"Ver detalhes do consumo",MENU_ITEM_FLAGS(0));
+    let updating=matches!(snap.update_status,UpdateStatus::Checking | UpdateStatus::Applying);
+    append_item(root,IDM_QUICK_UPDATE,if updating {"Atualização em andamento..."} else {"Atualizar aplicativo"},if updating {MF_GRAYED} else {MENU_ITEM_FLAGS(0)});
     append_item(root, tray::IDM_TOGGLE_WIDGET, &text.show_widget, checked(snap.widget_visible));
     separator(root);
 
@@ -1690,6 +1693,17 @@ mod context_menu_tests {
             let menu=build_context_menu(&s,false).unwrap();let mut items=Vec::new();inventory(menu.0,"",&mut items);
             for bit in 0..5 { let item=items.iter().find(|e|e.id==70+bit).unwrap();
                 assert_eq!(item.flags & MF_CHECKED.0 != 0,mask & (1<<bit)!=0); }
+        }
+    }
+    #[test]
+    fn quick_update_is_in_the_root_menu_and_disabled_while_busy() {
+        for status in [UpdateStatus::Idle,UpdateStatus::Checking,UpdateStatus::Applying,UpdateStatus::UpToDate,UpdateStatus::Failed] {
+            let menu=build_context_menu(&snapshot(status),false).unwrap();
+            let mut items=Vec::new();inventory(menu.0,"",&mut items);
+            let item=items.iter().find(|e|e.id==IDM_QUICK_UPDATE).unwrap();
+            assert!(!item.path.contains(" > "));
+            assert_eq!(item.flags & MF_GRAYED.0!=0,matches!(status,UpdateStatus::Checking|UpdateStatus::Applying));
+            assert!(items.iter().any(|e|e.id==IDM_VERSION_ACTION));
         }
     }
     fn snapshot(status:UpdateStatus)->ContextMenuSnapshot {

@@ -25,6 +25,8 @@ As opções valem para as duas bolhas e ficam salvas. Média da conta e resets s
 
 ## Atualizações automáticas
 
+O atalho **Atualizar aplicativo** fica diretamente no menu do botão direito e procura/instala uma versão mais nova. A versão instalada aparece no submenu de atualizações.
+
 Ativas diariamente pelo instalador. O aplicativo procura somente releases deste fork e valida o SHA-256 informado pelo GitHub antes de substituir o executável. Configurações e histórico são preservados. Botão direito permite conferir atualizações ou mudar a frequência.
 
 ## Dados e segurança
@@ -47,3 +49,9 @@ O pacote sai em `dist/Codex-Claude-Widget-Windows.zip`. O empacotador usa uma li
 
 Fork: [rafaelcaus/codex-usage-bubble](https://github.com/rafaelcaus/codex-usage-bubble).
 Derivado de [tiennm99/claude-code-usage-bubble](https://github.com/tiennm99/claude-code-usage-bubble), licença Apache-2.0. O nome interno do executável continua `claude-code-usage-bubble.exe` por compatibilidade.
+
+## Assinatura, API e gateway são fontes diferentes
+
+O consumo Codex exibido nesta versão vem da assinatura ChatGPT autenticada no perfil Windows. Não representa automaticamente o saldo de uma API externa, gateway ou conta de outra pessoa usada para gerar respostas. Autenticação por API e assinatura podem coexistir no computador e ter limites diferentes.
+
+Uma URL compatível com OpenAI para geração não garante uma consulta compatível de consumo. Cada fornecedor precisa oferecer uma consulta de saldo/cota documentada e um adaptador validado. A integração de consumo da Clipoos está em análise; não está pronta nesta versão. Nenhuma credencial ChatGPT/Claude deve ser enviada a um gateway para tentar descobrir seus limites.
