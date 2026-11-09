@@ -8,9 +8,11 @@ Não precisa de administrador, token GitHub nem senha do autor. Cada pessoa prec
 
 As duas bolhas são ativadas e identificadas no topo. Atualizações automáticas diárias ficam habilitadas.
 
-Botão direito → Configurações → Informações no widget para escolher os dados visíveis.
-Botão direito → Exibição e tamanho permite ajustar tamanho, modo compacto e a opção de aparecer só sobre ChatGPT. Em instalação nova as bolhas aparecem sobre todos os aplicativos, para também permitir uso com Claude.
+Botão direito → Abrir configurações → Informações para escolher os dados visíveis.
+Abrir configurações → Geral permite ajustar tamanho, modo compacto e a opção de aparecer só sobre ChatGPT. Em instalação nova as bolhas aparecem sobre todos os aplicativos, para também permitir uso com Claude.
 
 SHA-256 acompanha o ZIP em SHA256SUMS.txt. O instalador valida o executável antes de modificar a instalação. Ele preserva configurações e histórico e guarda backup do executável anterior.
 
 Leia SECURITY.md para o escopo e as limitações dessa verificação. Binários sem assinatura podem receber aviso do Windows; confira origem e integridade antes de decidir executar. Não desative o antivírus nem as proteções do Windows.
+
+Para APIs e gateways, veja Contas e APIs: é necessária uma consulta de consumo do fornecedor, além da URL usada para gerar respostas. A chave fica no Windows de cada usuário; não compartilhe credenciais.

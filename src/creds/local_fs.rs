@@ -12,10 +12,16 @@ pub struct LocalClaudeCreds {
     id: String,
 }
 
+pub fn config_root() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|p| p.join(".claude")))
+}
+
 impl LocalClaudeCreds {
     pub fn detect() -> Option<Self> {
-        let home = dirs::home_dir()?;
-        let path = home.join(".claude").join(".credentials.json");
+        let path = config_root()?.join(".credentials.json");
         let id = format!("local:{}", path.display());
         Some(Self { path, id })
     }

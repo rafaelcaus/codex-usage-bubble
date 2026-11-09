@@ -75,6 +75,7 @@ const IDM_HELP: u16 = 39;
 const IDM_COMPACT: u16 = 40;
 const IDM_DETAILS: u16 = 41;
 const IDM_QUICK_UPDATE: u16 = 42;
+const IDM_PREFERENCES: u16 = 43;
 const IDM_RESTART: u16 = 33;
 const IDM_SIZE_SMALLER: u16 = 34;
 const IDM_SIZE_LARGER: u16 = 35;
@@ -151,10 +152,11 @@ struct ProviderUiState {
     /// Local date and explicit machine scope for the bubble.
     today_title: String,
     average_micro: String,
-    credits_title:String,
-    credits_value:String,
-    credits_count_text:String,
-    credits_expiry_text:String,
+    credits_title: String,
+    credits_value: String,
+    credits_count_text: String,
+    credits_expiry_text: String,
+    status_note: String,
 }
 
 fn state() -> &'static Mutex<Option<AppState>> {
@@ -221,6 +223,13 @@ fn acquire_singleton_mutex(retry: bool) -> Option<HANDLE> {
     None
 }
 
+pub fn open_existing_preferences()->bool {
+    let class=os::to_utf16_nul(APP_CLASS_NAME);
+    if let Ok(hwnd)=unsafe {FindWindowW(PCWSTR(class.as_ptr()),PCWSTR::null())} {
+        return unsafe {PostMessageW(hwnd,WM_COMMAND,WPARAM(IDM_PREFERENCES as usize),LPARAM(0))}.is_ok();
+    }
+    false
+}
 pub fn run(args: crate::AppArgs) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -232,6 +241,7 @@ pub fn run(args: crate::AppArgs) {
     };
 
     let settings = settings::load();
+    crate::external_usage::configure(&settings);
     let i18n = I18n::load();
     let is_dark = os::theme::is_dark();
     let install_channel = update::current_channel();
@@ -279,7 +289,9 @@ pub fn run(args: crate::AppArgs) {
     // thread with its own 60s loop; the UI only reads its last snapshot.
     crate::appserver::start();
     crate::local_usage::start();
-    unsafe { SetTimer(msg_hwnd, TIMER_LOCAL_USAGE, 5_000, None); }
+    unsafe {
+        SetTimer(msg_hwnd, TIMER_LOCAL_USAGE, 5_000, None);
+    }
     // Fork (Rafael): push the persisted focus-follow flag into the bubble
     // module so the 0.35s foreground check enforces it from the first tick.
     bubble::set_only_over_chatgpt(
@@ -311,10 +323,14 @@ pub fn run(args: crate::AppArgs) {
     schedule_update_check_timer(msg_hwnd);
     spawn_poll_thread();
 
+    if std::env::args().any(|a|a=="--settings") {show_preferences();}
     log::info!("app::run entered message loop");
     let mut msg = MSG::default();
     unsafe {
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+            if crate::preferences::route_message(&msg) {
+                continue;
+            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -353,7 +369,10 @@ fn create_message_window() -> Option<HWND> {
 }
 
 fn create_initial_bubbles() {
-    let mask=lock_state().as_ref().map(|s|s.settings.visible_sections).unwrap_or(31);
+    let mask = lock_state()
+        .as_ref()
+        .map(|s| s.settings.visible_sections)
+        .unwrap_or(31);
     bubble::set_visible_sections(mask);
     let (settings, is_dark) = match lock_state().as_ref() {
         Some(s) => (s.settings.clone(), s.is_dark),
@@ -384,8 +403,11 @@ fn spawn_bubble(kind: ProviderId, settings: &Settings, is_dark: bool) {
         today_text: String::new(),
         today_title: String::new(),
         average_text: String::new(),
-        credits_title:String::new(),credits_text:String::new(),
-        quota_label:"Cota".into(),secondary_label:String::new(),quota_duration_secs:None,
+        credits_title: String::new(),
+        credits_text: String::new(),
+        quota_label: "Cota".into(),
+        secondary_label: String::new(),
+        quota_duration_secs: None,
         is_dark,
         compact: settings.compact_mode,
     });
@@ -405,14 +427,17 @@ unsafe extern "system" fn msg_wnd_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_COMMAND if (wparam.0 & 0xffff)==IDM_PREFERENCES as usize => { show_preferences(); LRESULT(0) }
         WM_APP_USAGE_UPDATED => {
             propagate_to_ui();
             LRESULT(0)
         }
         WM_APP_UPDATE_APPLIED => {
             // Persist the most recent UI preferences before the successor starts.
-            let latest=lock_state().as_ref().map(|s|s.settings.clone());
-            if let Some(settings)=latest { settings::save(&settings); }
+            let latest = lock_state().as_ref().map(|s| s.settings.clone());
+            if let Some(settings) = latest {
+                settings::save(&settings);
+            }
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -435,24 +460,37 @@ unsafe extern "system" fn msg_wnd_proc(
 
 // ---------- Bubble callbacks ----------
 
-fn on_bubble_click(hwnd: HWND, model: ProviderId, point:POINT) {
-    if bubble::is_toggle_point(hwnd,point) { toggle_compact_mode();return; }
+fn on_bubble_click(hwnd: HWND, model: ProviderId, point: POINT) {
+    if bubble::is_toggle_point(hwnd, point) {
+        toggle_compact_mode();
+        return;
+    }
     log::info!("bubble click (no drag): toggle panel for {model:?}");
     let data = build_panel_data(model);
     panel::toggle(data, hwnd);
 }
 
-fn toggle_section(section:u16) {
-    update_settings(|s|s.settings.visible_sections ^= 1 << section);
-    let mask=lock_state().as_ref().map(|s|s.settings.visible_sections).unwrap_or(31);
+fn toggle_section(section: u16) {
+    update_settings(|s| s.settings.visible_sections ^= 1 << section);
+    let mask = lock_state()
+        .as_ref()
+        .map(|s| s.settings.visible_sections)
+        .unwrap_or(31);
     bubble::set_visible_sections(mask);
 }
 fn toggle_compact_mode() {
-    update_settings(|s|s.settings.compact_mode=!s.settings.compact_mode);
-    let snapshot=lock_state().as_ref().map(|s|(s.settings.compact_mode,s.bubbles.values().copied().collect::<Vec<_>>()));
-    if let Some((compact,windows))=snapshot {
+    update_settings(|s| s.settings.compact_mode = !s.settings.compact_mode);
+    let snapshot = lock_state().as_ref().map(|s| {
+        (
+            s.settings.compact_mode,
+            s.bubbles.values().copied().collect::<Vec<_>>(),
+        )
+    });
+    if let Some((compact, windows)) = snapshot {
         panel::hide();
-        for hwnd in windows { bubble::set_compact(hwnd.to_hwnd(),compact); }
+        for hwnd in windows {
+            bubble::set_compact(hwnd.to_hwnd(), compact);
+        }
     }
 }
 
@@ -472,6 +510,7 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
     let id = (id & 0xFFFF) as u16;
     match id {
         IDM_REFRESH => spawn_poll_thread(),
+        IDM_PREFERENCES => show_preferences(),
         IDM_EXIT => unsafe { PostQuitMessage(0) },
         IDM_FREQ_1MIN => set_poll_interval(POLL_1_MIN),
         IDM_FREQ_5MIN => set_poll_interval(POLL_5_MIN),
@@ -488,8 +527,10 @@ fn on_menu_command(id: u32, _owner_hwnd: HWND) {
         IDM_COMPACT => toggle_compact_mode(),
         70..=74 => toggle_section(id - 70),
         IDM_DETAILS => {
-            if let Some(model)=bubble::model(_owner_hwnd) { panel::toggle(build_panel_data(model),_owner_hwnd); }
-        },
+            if let Some(model) = bubble::model(_owner_hwnd) {
+                panel::toggle(build_panel_data(model), _owner_hwnd);
+            }
+        }
         IDM_SIZE_SMALLER => resize_bubbles(-bubble::RESIZE_STEP_LOGICAL),
         IDM_SIZE_LARGER => resize_bubbles(bubble::RESIZE_STEP_LOGICAL),
         IDM_RESET_SIZE => set_bubble_size(bubble::DEFAULT_BUBBLE_SIZE),
@@ -576,6 +617,13 @@ fn do_poll() {
         let mut reg = registry.lock().expect("registry mutex poisoned");
         reg.poll_enabled(&http, &settings)
     };
+    let current=lock_state().as_ref().map(|s|s.settings.clone());
+    if let Some(current)=current {
+        if current.codex_api!=settings.codex_api || current.claude_api!=settings.claude_api {
+            crate::external_usage::configure(&current);
+            return; // A request started before changing the source cannot replace the new account.
+        }
+    }
     let auth_failures = apply_results(results);
     if !auth_failures.is_empty() {
         attempt_refresh(auth_failures, &registry);
@@ -612,16 +660,16 @@ fn apply_results(
                             crossings.push((id, threshold));
                         }
                     }
+                    entry.status_note.clear();
                     entry.windows = windows;
                     // Fork: feed the burn-rate sampler (Codex weekly only).
-                    if id == ProviderId::ChatGpt {
-                        if let Some(weekly)=entry.windows.weekly() {
+                    if id == ProviderId::ChatGpt && !crate::external_usage::is_external(id) {
+                        if let Some(weekly) = entry.windows.weekly() {
                             crate::samples::record(weekly.utilization);
                             crate::history::weekly(weekly.utilization, weekly.resets_at);
                         }
                     }
-                    entry.primary_text =
-                        i18n::format_window_remaining(&windows.primary, &strings);
+                    entry.primary_text = i18n::format_window_remaining(&windows.primary, &strings);
                     entry.secondary_text =
                         i18n::format_window_remaining(&windows.secondary, &strings);
                     refresh_detail_texts(entry, id, &strings);
@@ -631,6 +679,7 @@ fn apply_results(
                     auth_failures.push(id);
                     let entry = state.snapshots.entry(id).or_default();
                     entry.windows = UsageWindows::default();
+                    entry.status_note = "Faça login no CLI".into();
                     entry.primary_text = "!".into();
                     entry.secondary_text = "!".into();
                 }
@@ -638,6 +687,11 @@ fn apply_results(
                     log::warn!("provider {id:?} poll failed: {e}");
                     let entry = state.snapshots.entry(id).or_default();
                     entry.windows = UsageWindows::default();
+                    entry.status_note = if crate::external_usage::is_external(id) {
+                        "Ver configurações da API".into()
+                    } else {
+                        "Verifique login e conexão".into()
+                    };
                     entry.primary_text = "…".into();
                     entry.secondary_text = "…".into();
                 }
@@ -676,12 +730,17 @@ fn attempt_refresh(failures: Vec<ProviderId>, registry: &Arc<Mutex<Registry>>) {
 
 /// UI formatting only: local disk scans and account reads run on workers.
 fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &LocaleStrings) {
-    let displayed=entry.windows.displayed();
-    let first=displayed.first().copied();
-    let weekly=entry.windows.weekly();
-    entry.primary_text=first.map(|w|i18n::format_window_remaining(&w,strings)).unwrap_or_else(||"Cota indisponível".into());
-    entry.secondary_text=displayed.get(1).map(|w|i18n::format_window_remaining(w,strings)).unwrap_or_default();
-    let cd = i18n::format_precise_countdown(first.and_then(|w|w.resets_at), strings);
+    let displayed = entry.windows.displayed();
+    let first = displayed.first().copied();
+    let weekly = entry.windows.weekly();
+    entry.primary_text = first
+        .map(|w| i18n::format_window_remaining(&w, strings))
+        .unwrap_or_else(|| "Cota indisponível".into());
+    entry.secondary_text = displayed
+        .get(1)
+        .map(|w| i18n::format_window_remaining(w, strings))
+        .unwrap_or_default();
+    let cd = i18n::format_precise_countdown(first.and_then(|w| w.resets_at), strings);
     entry.reset_text = if cd.is_empty() {
         format!("{}: -", strings.reset_prefix)
     } else {
@@ -690,12 +749,16 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     entry.tokens_text.clear();
 
     // Daily budget: remaining % spread over the exact days left.
-    entry.budget_text = match weekly.and_then(|w|w.resets_at)
+    entry.budget_text = match weekly
+        .and_then(|w| w.resets_at)
         .and_then(|r| r.duration_since(SystemTime::now()).ok())
         .map(|d| d.as_secs_f64() / 86_400.0)
     {
         Some(days) if days > 0.0 => {
-            let used = weekly.map(|w|w.utilization).unwrap_or(0.0).clamp(0.0, 100.0);
+            let used = weekly
+                .map(|w| w.utilization)
+                .unwrap_or(0.0)
+                .clamp(0.0, 100.0);
             format!(
                 "{}: ~{}%/dia",
                 strings.budget_prefix,
@@ -706,7 +769,7 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
     };
 
     // Burn-rate projection from recent samples.
-    let remaining = (100.0 - weekly.map(|w|w.utilization).unwrap_or(100.0)).clamp(0.0, 100.0);
+    let remaining = (100.0 - weekly.map(|w| w.utilization).unwrap_or(100.0)).clamp(0.0, 100.0);
     entry.pace_text = match crate::samples::project(remaining) {
         crate::samples::Pace::Collecting => {
             format!("{}: coletando dados...", strings.pace_prefix)
@@ -730,29 +793,66 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         }
     };
 
-    if weekly.is_none() { entry.budget_text.clear(); entry.pace_text.clear(); }
-    if id != ProviderId::ChatGpt { entry.pace_text.clear(); }
+    if weekly.is_none() {
+        entry.budget_text.clear();
+        entry.pace_text.clear();
+    }
+    if id != ProviderId::ChatGpt {
+        entry.pace_text.clear();
+    }
+    if crate::external_usage::is_external(id) {
+        let api = crate::external_usage::latest(id);
+        entry.today_title = "Consumo da API:".into();
+        entry.today_micro = if api.valid {
+            format!("{:.0} {}", api.used, api.units)
+        } else {
+            "Indisponível".into()
+        };
+        entry.tokens_today_text = entry.today_micro.clone();
+        entry.average_micro = "Não fornecida pela API".into();
+        entry.tokens_text = entry.average_micro.clone();
+        entry.credits_title = "Resets da API:".into();
+        entry.credits_value = "Não informado".into();
+        entry.credits_count_text = entry.credits_value.clone();
+        entry.credits_expiry_text.clear();
+        entry.budget_text.clear();
+        entry.pace_text.clear();
+        if !entry.status_note.is_empty() {
+            entry.reset_text = entry.status_note.clone();
+        }
+        return;
+    }
     if id == ProviderId::ChatGpt {
         let today = chrono::Local::now().date_naive();
         let local = crate::local_usage::latest();
         entry.today_title = format!("Hoje {} neste PC:", today.format("%d/%m"));
         if let Some(n) = local.tokens {
-            entry.tokens_today_text = format!("Hoje neste PC: {} tokens", crate::codex_tokens::format_tokens(n));
+            entry.tokens_today_text = format!(
+                "Hoje neste PC: {} tokens",
+                crate::codex_tokens::format_tokens(n)
+            );
             // Full integer: activity remains visible even below 0.1 million.
             entry.today_micro = format!("{} tokens", crate::codex_tokens::format_tokens(n));
         } else {
             entry.today_micro = "Indisponível".into();
             entry.tokens_today_text = "Hoje neste PC: leitura indisponível".into();
         }
-        let credits=crate::reset_credits::latest();
-        entry.credits_title=credits.title;entry.credits_value=credits.value;
-        entry.credits_count_text=credits.count_text;entry.credits_expiry_text=credits.expiry_text;
+        let credits = crate::reset_credits::latest();
+        entry.credits_title = credits.title;
+        entry.credits_value = credits.value;
+        entry.credits_count_text = credits.count_text;
+        entry.credits_expiry_text = credits.expiry_text;
         let api = crate::appserver::latest();
         let from = today - chrono::Duration::days(7);
         let to = today - chrono::Duration::days(1);
         if let Some(n) = api.average_previous_week(today) {
             entry.average_micro = format!("{} tokens/dia", crate::codex_tokens::format_tokens(n));
-            entry.tokens_text = format!("Média da conta {}-{}: {}/dia", from.format("%d/%m"), to.format("%d/%m"), crate::codex_tokens::format_tokens(n));
+            entry.tokens_text = format!(
+                "Média da conta {}-{}: {}/dia",
+                from.format("%d/%m"),
+                to.format("%d/%m"),
+                crate::codex_tokens::format_tokens(n)
+            );
         } else {
             entry.average_micro = "Indisponível".into();
             entry.tokens_text = "Média da conta (7 dias): dados incompletos".into();
@@ -761,7 +861,10 @@ fn refresh_detail_texts(entry: &mut ProviderUiState, id: ProviderId, strings: &L
         entry.today_micro.clear();
         entry.today_title.clear();
         entry.average_micro.clear();
-        entry.credits_title.clear();entry.credits_value.clear();entry.credits_count_text.clear();entry.credits_expiry_text.clear();
+        entry.credits_title.clear();
+        entry.credits_value.clear();
+        entry.credits_count_text.clear();
+        entry.credits_expiry_text.clear();
         entry.tokens_today_text = format!("{}: -", strings.tokens_today_prefix);
     };
 }
@@ -774,8 +877,7 @@ fn refresh_countdowns() {
         };
         let strings = s.i18n.strings().clone();
         for (id, entry) in s.snapshots.iter_mut() {
-            entry.primary_text =
-                i18n::format_window_remaining(&entry.windows.primary, &strings);
+            entry.primary_text = i18n::format_window_remaining(&entry.windows.primary, &strings);
             entry.secondary_text =
                 i18n::format_window_remaining(&entry.windows.secondary, &strings);
             refresh_detail_texts(entry, *id, &strings);
@@ -803,17 +905,22 @@ fn propagate_to_ui() {
 
     for (kind, hwnd) in snap.bubbles.iter() {
         let entry = snap.snapshots.get(kind);
-        let windows=entry.map(|e|e.windows.displayed()).unwrap_or_default();
-        let first=windows.first();let second=windows.get(1);
-        let session_pct=first.map(|w|w.utilization);
-        let weekly_pct=second.map(|w|w.utilization);
-        let session_text=first.map(|w|i18n::format_precise_countdown(w.resets_at,&snap.i18n_strings)).unwrap_or_default();
-        let weekly_text=second.map(|w|i18n::format_precise_countdown(w.resets_at,&snap.i18n_strings)).unwrap_or_default();
-        let session_resets_at=first.and_then(|w|w.resets_at);
-        let weekly_resets_at=second.and_then(|w|w.resets_at);
-        let first_label=first.map(|w|w.label()).unwrap_or_else(||"Cota".into());
-        let second_label=second.map(|w|w.label()).unwrap_or_default();
-        let duration_secs=first.and_then(|w|w.duration_secs);
+        let windows = entry.map(|e| e.windows.displayed()).unwrap_or_default();
+        let first = windows.first();
+        let second = windows.get(1);
+        let session_pct = first.map(|w| w.utilization);
+        let weekly_pct = second.map(|w| w.utilization);
+        let session_text = first
+            .map(|w| i18n::format_precise_countdown(w.resets_at, &snap.i18n_strings))
+            .unwrap_or_else(|| entry.map(|e| e.status_note.clone()).unwrap_or_default());
+        let weekly_text = second
+            .map(|w| i18n::format_precise_countdown(w.resets_at, &snap.i18n_strings))
+            .unwrap_or_default();
+        let session_resets_at = first.and_then(|w| w.resets_at);
+        let weekly_resets_at = second.and_then(|w| w.resets_at);
+        let first_label = first.map(|w| w.label()).unwrap_or_else(|| "Cota".into());
+        let second_label = second.map(|w| w.label()).unwrap_or_default();
+        let duration_secs = first.and_then(|w| w.duration_secs);
         log::info!(
             "bubble data: pct={session_pct:?} countdown='{session_text}' weekly_reset={weekly_resets_at:?}"
         );
@@ -836,16 +943,14 @@ fn propagate_to_ui() {
             weekly_pct,
             weekly_text,
             weekly_resets_at,
-            entry
-                .map(|s| s.today_micro.clone())
-                .unwrap_or_default(),
-            entry
-                .map(|s| s.today_title.clone())
-                .unwrap_or_default(),
+            entry.map(|s| s.today_micro.clone()).unwrap_or_default(),
+            entry.map(|s| s.today_title.clone()).unwrap_or_default(),
             entry.map(|s| s.average_micro.clone()).unwrap_or_default(),
-            first_label, second_label, duration_secs,
-            entry.map(|s|s.credits_title.clone()).unwrap_or_default(),
-            entry.map(|s|s.credits_value.clone()).unwrap_or_default(),
+            first_label,
+            second_label,
+            duration_secs,
+            entry.map(|s| s.credits_title.clone()).unwrap_or_default(),
+            entry.map(|s| s.credits_value.clone()).unwrap_or_default(),
         );
     }
     refresh_tray_icons_with(&snap);
@@ -887,7 +992,8 @@ fn build_panel_data(model: ProviderId) -> PanelData {
         budget_text: provider_state.budget_text,
         pace_text: provider_state.pace_text,
         tokens_today_text: provider_state.tokens_today_text,
-        credits_count_text:provider_state.credits_count_text,credits_expiry_text:provider_state.credits_expiry_text,
+        credits_count_text: provider_state.credits_count_text,
+        credits_expiry_text: provider_state.credits_expiry_text,
         is_dark: s.is_dark,
         strings,
     }
@@ -902,7 +1008,8 @@ fn build_panel_data_from(snap: &UiSnapshot, model: ProviderId, p: &ProviderUiSta
         budget_text: p.budget_text.clone(),
         pace_text: p.pace_text.clone(),
         tokens_today_text: p.tokens_today_text.clone(),
-        credits_count_text:p.credits_count_text.clone(),credits_expiry_text:p.credits_expiry_text.clone(),
+        credits_count_text: p.credits_count_text.clone(),
+        credits_expiry_text: p.credits_expiry_text.clone(),
         is_dark: snap.is_dark,
         strings: snap.i18n_strings.clone(),
     }
@@ -918,7 +1025,8 @@ fn placeholder_panel(model: ProviderId) -> PanelData {
         budget_text: String::new(),
         pace_text: String::new(),
         tokens_today_text: String::new(),
-        credits_count_text:String::new(),credits_expiry_text:String::new(),
+        credits_count_text: String::new(),
+        credits_expiry_text: String::new(),
         is_dark: false,
         strings,
     }
@@ -988,8 +1096,21 @@ fn refresh_tray_icons_with(snap: &UiSnapshot) {
 }
 
 fn tray_tooltip(label: &str, entry: Option<&ProviderUiState>, strings: &LocaleStrings) -> String {
-    let quota = entry.map(|e| e.windows.displayed().into_iter().map(|w|format!("{}: {:.0}% restantes",w.label(),100.0-w.utilization)).collect::<Vec<_>>().join(" · ")).filter(|s|!s.is_empty()).unwrap_or_else(||"Consultando a cota…".into());
-    let local = entry.map(|e| e.tokens_today_text.as_str()).filter(|s| !s.is_empty()).unwrap_or("Consumo local: aguardando leitura");
+    let quota = entry
+        .map(|e| {
+            e.windows
+                .displayed()
+                .into_iter()
+                .map(|w| format!("{}: {:.0}% restantes", w.label(), 100.0 - w.utilization))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Consultando a cota…".into());
+    let local = entry
+        .map(|e| e.tokens_today_text.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Consumo local: aguardando leitura");
     format!("{label}\n{quota}\n{local}\n{}", strings.tray_left_click)
 }
 
@@ -1127,7 +1248,7 @@ fn announce_update_applied(_msg_hwnd: HWND, version: &str) {
 // ---------- Context menu ----------
 
 struct ContextMenuSnapshot {
-    visible_sections:u8,
+    visible_sections: u8,
     strings: LocaleStrings,
     current_interval: u32,
     update_check_interval_secs: Option<u64>,
@@ -1139,83 +1260,202 @@ struct ContextMenuSnapshot {
     install_channel: InstallChannel,
     update_status: UpdateStatus,
     bubble_size_logical: i32,
-    reset_credits:crate::reset_credits::View,
-    compact:bool,
+    reset_credits: crate::reset_credits::View,
+    compact: bool,
 }
 
 /// Owns the entire native menu tree, including on construction failures.
 struct PopupMenu(HMENU);
 impl Drop for PopupMenu {
-    fn drop(&mut self) { unsafe { let _ = DestroyMenu(self.0); } }
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DestroyMenu(self.0);
+        }
+    }
 }
 fn add_submenu(parent: HMENU, label: &str) -> Option<HMENU> {
     let child = unsafe { CreatePopupMenu().ok()? };
     let label = os::to_utf16_nul(label);
     if unsafe { AppendMenuW(parent, MF_POPUP, child.0 as usize, PCWSTR(label.as_ptr())) }.is_err() {
-        unsafe { let _ = DestroyMenu(child); }
+        unsafe {
+            let _ = DestroyMenu(child);
+        }
         return None;
     }
     Some(child)
 }
 fn separator(menu: HMENU) {
-    unsafe { let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null()); }
+    unsafe {
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    }
 }
 fn checked(value: bool) -> MENU_ITEM_FLAGS {
-    if value { MF_CHECKED } else { MENU_ITEM_FLAGS(0) }
+    if value {
+        MF_CHECKED
+    } else {
+        MENU_ITEM_FLAGS(0)
+    }
 }
 
 /// Builds menus without reading settings, starting requests or displaying UI.
 /// All state is supplied explicitly so every submenu and update state can be audited.
-fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Option<PopupMenu> {
+fn build_advanced_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Option<PopupMenu> {
     let menu = PopupMenu(unsafe { CreatePopupMenu().ok()? });
     let root = menu.0;
     let text = &snap.strings;
     append_item(root, IDM_REFRESH, &text.refresh, MENU_ITEM_FLAGS(0));
-    append_item(root,IDM_DETAILS,"Ver detalhes do consumo",MENU_ITEM_FLAGS(0));
-    let updating=matches!(snap.update_status,UpdateStatus::Checking | UpdateStatus::Applying);
-    append_item(root,IDM_QUICK_UPDATE,if updating {"Atualização em andamento..."} else {"Atualizar aplicativo"},if updating {MF_GRAYED} else {MENU_ITEM_FLAGS(0)});
-    append_item(root, tray::IDM_TOGGLE_WIDGET, &text.show_widget, checked(snap.widget_visible));
+    append_item(
+        root,
+        IDM_DETAILS,
+        "Ver detalhes do consumo",
+        MENU_ITEM_FLAGS(0),
+    );
+    let updating = matches!(
+        snap.update_status,
+        UpdateStatus::Checking | UpdateStatus::Applying
+    );
+    append_item(
+        root,
+        IDM_QUICK_UPDATE,
+        if updating {
+            "Atualização em andamento..."
+        } else {
+            "Atualizar aplicativo"
+        },
+        if updating {
+            MF_GRAYED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        },
+    );
+    append_item(
+        root,
+        tray::IDM_TOGGLE_WIDGET,
+        &text.show_widget,
+        checked(snap.widget_visible),
+    );
     separator(root);
 
     let display = add_submenu(root, &text.appearance)?;
-    append_item(display,IDM_COMPACT,"Modo compacto",checked(snap.compact));
-    append_item(display, IDM_ONLY_CHATGPT, &text.only_over_chatgpt, checked(snap.only_over_chatgpt));
+    append_item(display, IDM_COMPACT, "Modo compacto", checked(snap.compact));
+    append_item(
+        display,
+        IDM_ONLY_CHATGPT,
+        &text.only_over_chatgpt,
+        checked(snap.only_over_chatgpt),
+    );
     separator(display);
-    append_item(display, IDM_SIZE_SMALLER, &text.size_smaller,
-        if snap.bubble_size_logical <= bubble::MIN_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
-    append_item(display, IDM_SIZE_LARGER, &text.size_larger,
-        if snap.bubble_size_logical >= bubble::MAX_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
-    append_item(display, IDM_RESET_SIZE, &text.reset_size,
-        if snap.bubble_size_logical == bubble::DEFAULT_BUBBLE_SIZE { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
-    append_item(display, IDM_RESET_POSITION, &text.reset_position, MENU_ITEM_FLAGS(0));
+    append_item(
+        display,
+        IDM_SIZE_SMALLER,
+        &text.size_smaller,
+        if snap.bubble_size_logical <= bubble::MIN_BUBBLE_SIZE {
+            MF_GRAYED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        },
+    );
+    append_item(
+        display,
+        IDM_SIZE_LARGER,
+        &text.size_larger,
+        if snap.bubble_size_logical >= bubble::MAX_BUBBLE_SIZE {
+            MF_GRAYED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        },
+    );
+    append_item(
+        display,
+        IDM_RESET_SIZE,
+        &text.reset_size,
+        if snap.bubble_size_logical == bubble::DEFAULT_BUBBLE_SIZE {
+            MF_GRAYED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        },
+    );
+    append_item(
+        display,
+        IDM_RESET_POSITION,
+        &text.reset_position,
+        MENU_ITEM_FLAGS(0),
+    );
 
     let providers = add_submenu(root, &text.providers)?;
-    append_item(providers, IDM_MODEL_CHATGPT, &text.chatgpt_label, checked(snap.show_chatgpt));
-    append_item(providers, IDM_MODEL_CLAUDE, &text.claude_label, checked(snap.show_claude));
-    append_item(providers, IDM_MODEL_OPENCODE_GO,
-        &format!("{} (indisponível)", text.opencode_go_label), MF_GRAYED | checked(snap.show_opencode_go));
+    append_item(
+        providers,
+        IDM_MODEL_CHATGPT,
+        &text.chatgpt_label,
+        checked(snap.show_chatgpt),
+    );
+    append_item(
+        providers,
+        IDM_MODEL_CLAUDE,
+        &text.claude_label,
+        checked(snap.show_claude),
+    );
+    append_item(
+        providers,
+        IDM_MODEL_OPENCODE_GO,
+        &format!("{} (indisponível)", text.opencode_go_label),
+        MF_GRAYED | checked(snap.show_opencode_go),
+    );
 
     let settings_menu = add_submenu(root, &text.settings)?;
-    let sections=add_submenu(settings_menu,"Informações no widget")?;
-    for (bit,label) in ["Quando renova","Segundo limite (se disponível)","Uso de hoje em tokens (Codex)","Média de 7 dias (Codex)","Resets disponíveis (Codex)"].iter().enumerate() {
-        append_item(sections,70+bit as u16,label,checked(snap.visible_sections & (1<<bit)!=0));
+    let sections = add_submenu(settings_menu, "Informações no widget")?;
+    for (bit, label) in [
+        "Quando renova",
+        "Segundo limite (se disponível)",
+        "Uso de hoje em tokens (Codex)",
+        "Média de 7 dias (Codex)",
+        "Resets disponíveis (Codex)",
+    ]
+    .iter()
+    .enumerate()
+    {
+        append_item(
+            sections,
+            70 + bit as u16,
+            label,
+            checked(snap.visible_sections & (1 << bit) != 0),
+        );
     }
-    append_item(settings_menu, IDM_START_WITH_WINDOWS, &text.start_with_windows, checked(startup_enabled));
+    append_item(
+        settings_menu,
+        IDM_START_WITH_WINDOWS,
+        &text.start_with_windows,
+        checked(startup_enabled),
+    );
     let frequency = add_submenu(settings_menu, &text.update_frequency)?;
     for (id, interval, label) in [
         (IDM_FREQ_1MIN, POLL_1_MIN, &text.one_minute),
         (IDM_FREQ_5MIN, POLL_5_MIN, &text.five_minutes),
         (IDM_FREQ_15MIN, POLL_15_MIN, &text.fifteen_minutes),
         (IDM_FREQ_1HOUR, POLL_1_HOUR, &text.one_hour),
-    ] { append_item(frequency, id, label, checked(interval == snap.current_interval)); }
+    ] {
+        append_item(
+            frequency,
+            id,
+            label,
+            checked(interval == snap.current_interval),
+        );
+    }
     separator(frequency);
     append_item(frequency, 0, &text.local_refresh_note, MF_GRAYED);
     append_item(frequency, 0, &text.history_refresh_note, MF_GRAYED);
 
     let updates = add_submenu(root, &text.updates_menu)?;
-    let busy = matches!(snap.update_status, UpdateStatus::Checking | UpdateStatus::Applying);
-    append_item(updates, IDM_VERSION_ACTION, &version_action_label(snap),
-        if busy { MF_GRAYED } else { MENU_ITEM_FLAGS(0) });
+    let busy = matches!(
+        snap.update_status,
+        UpdateStatus::Checking | UpdateStatus::Applying
+    );
+    append_item(
+        updates,
+        IDM_VERSION_ACTION,
+        &version_action_label(snap),
+        if busy { MF_GRAYED } else { MENU_ITEM_FLAGS(0) },
+    );
     let status = match snap.update_status {
         UpdateStatus::Idle => None,
         UpdateStatus::Checking => Some(&text.checking_for_updates),
@@ -1223,20 +1463,48 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
         UpdateStatus::Applying => Some(&text.applying_update),
         UpdateStatus::Failed => Some(&text.update_failed),
     };
-    if let Some(status) = status { append_item(updates, 0, status, MF_GRAYED); }
+    if let Some(status) = status {
+        append_item(updates, 0, status, MF_GRAYED);
+    }
     separator(updates);
     let automatic = add_submenu(updates, &text.auto_update_check)?;
     for (id, value, label) in [
         (IDM_UPDATE_AUTO_OFF, None, &text.auto_check_disabled),
-        (IDM_UPDATE_AUTO_HOURLY, Some(settings::UPDATE_CHECK_HOURLY_SECS), &text.auto_check_hourly),
-        (IDM_UPDATE_AUTO_DAILY, Some(settings::UPDATE_CHECK_DAILY_SECS), &text.auto_check_daily),
-        (IDM_UPDATE_AUTO_WEEKLY, Some(settings::UPDATE_CHECK_WEEKLY_SECS), &text.auto_check_weekly),
-    ] { append_item(automatic, id, label, checked(value == snap.update_check_interval_secs)); }
+        (
+            IDM_UPDATE_AUTO_HOURLY,
+            Some(settings::UPDATE_CHECK_HOURLY_SECS),
+            &text.auto_check_hourly,
+        ),
+        (
+            IDM_UPDATE_AUTO_DAILY,
+            Some(settings::UPDATE_CHECK_DAILY_SECS),
+            &text.auto_check_daily,
+        ),
+        (
+            IDM_UPDATE_AUTO_WEEKLY,
+            Some(settings::UPDATE_CHECK_WEEKLY_SECS),
+            &text.auto_check_weekly,
+        ),
+    ] {
+        append_item(
+            automatic,
+            id,
+            label,
+            checked(value == snap.update_check_interval_secs),
+        );
+    }
 
-    let resets=add_submenu(root,"Resets do Codex")?;
-    for detail in &snap.reset_credits.details { append_item(resets,0,detail,MF_GRAYED); }
+    let resets = add_submenu(root, "Resets do Codex")?;
+    for detail in &snap.reset_credits.details {
+        append_item(resets, 0, detail, MF_GRAYED);
+    }
     separator(resets);
-    append_item(resets,0,"Consulta a cada minuto · datas no horário deste PC",MF_GRAYED);
+    append_item(
+        resets,
+        0,
+        "Consulta a cada minuto · datas no horário deste PC",
+        MF_GRAYED,
+    );
     append_item(root, IDM_HELP, &text.controls, MENU_ITEM_FLAGS(0));
     separator(root);
     append_item(root, IDM_RESTART, &text.restart, MENU_ITEM_FLAGS(0));
@@ -1244,42 +1512,194 @@ fn build_context_menu(snap: &ContextMenuSnapshot, startup_enabled: bool) -> Opti
     Some(menu)
 }
 
+fn build_context_menu(snap: &ContextMenuSnapshot, startup: bool) -> Option<PopupMenu> {
+    let root = PopupMenu(unsafe { CreatePopupMenu().ok()? });
+    append_item(
+        root.0,
+        IDM_PREFERENCES,
+        "Abrir configurações...",
+        MENU_ITEM_FLAGS(0),
+    );
+    append_item(
+        root.0,
+        IDM_REFRESH,
+        "Atualizar dados agora",
+        MENU_ITEM_FLAGS(0),
+    );
+    append_item(
+        root.0,
+        IDM_DETAILS,
+        "Ver detalhes do consumo",
+        MENU_ITEM_FLAGS(0),
+    );
+    separator(root.0);
+    append_item(root.0, IDM_COMPACT, "Modo compacto", checked(snap.compact));
+    append_item(
+        root.0,
+        tray::IDM_TOGGLE_WIDGET,
+        "Mostrar bolhas",
+        checked(snap.widget_visible),
+    );
+    separator(root.0);
+    let busy = matches!(
+        snap.update_status,
+        UpdateStatus::Checking | UpdateStatus::Applying
+    );
+    append_item(
+        root.0,
+        IDM_QUICK_UPDATE,
+        if busy {
+            "Atualização em andamento..."
+        } else {
+            "Atualizar aplicativo"
+        },
+        if busy { MF_GRAYED } else { MENU_ITEM_FLAGS(0) },
+    );
+    separator(root.0);
+    let advanced = build_advanced_menu(snap, startup)?;
+    fn remove_action(menu: HMENU, id: u32) {
+        unsafe {
+            for pos in (0..GetMenuItemCount(menu)).rev() {
+                if GetMenuItemID(menu,pos)==id { let _=DeleteMenu(menu,pos as u32,MF_BYPOSITION); }
+                else { let sub=GetSubMenu(menu,pos); if !sub.0.is_null() {remove_action(sub,id);} }
+            }
+        }
+    }
+    for id in [IDM_REFRESH,IDM_DETAILS,IDM_COMPACT,tray::IDM_TOGGLE_WIDGET,IDM_QUICK_UPDATE,IDM_EXIT] {remove_action(advanced.0,id.into());}
+    let label = os::to_utf16_nul("Mais opções");
+    if unsafe {
+        AppendMenuW(
+            root.0,
+            MF_POPUP,
+            advanced.0 .0 as usize,
+            PCWSTR(label.as_ptr()),
+        )
+    }
+    .is_err()
+    {
+        return None;
+    }
+    std::mem::forget(advanced);
+    append_item(root.0, IDM_EXIT, "Sair", MENU_ITEM_FLAGS(0));
+    Some(root)
+}
+fn show_preferences() {
+    let settings = lock_state().as_ref().map(|s| s.settings.clone());
+    if let Some(settings) = settings {
+        crate::preferences::show(
+            settings,
+            is_startup_enabled(),
+            apply_preferences,
+            on_menu_command,
+        );
+    }
+}
+fn apply_preferences(desired: Settings, startup: bool) {
+    let Some(old) = lock_state().as_ref().map(|s| s.settings.clone()) else {
+        return;
+    };
+    update_settings(|s| {
+        s.settings.codex_api = desired.codex_api.clone();
+        s.settings.claude_api = desired.claude_api.clone();
+    });
+    crate::external_usage::configure(&desired);
+    if old.show_codex != desired.show_codex {
+        toggle_model(ProviderId::ChatGpt);
+    }
+    if old.show_claude_code != desired.show_claude_code {
+        toggle_model(ProviderId::Claude);
+    }
+    if old.compact_mode != desired.compact_mode {
+        toggle_compact_mode();
+    }
+    if old.only_over_chatgpt != desired.only_over_chatgpt {
+        toggle_only_over_chatgpt();
+    }
+    if old.widget_visible != desired.widget_visible {
+        toggle_widget_visibility();
+    }
+    update_settings(|s| s.settings.visible_sections = desired.visible_sections & 31);
+    bubble::set_visible_sections(desired.visible_sections);
+    set_bubble_size(desired.bubble_size_logical);
+    set_poll_interval(desired.poll_interval_ms);
+    set_update_check_interval(desired.update_check_interval_secs);
+    if startup != is_startup_enabled() {
+        toggle_startup();
+    }
+    if old.codex_api != desired.codex_api || old.claude_api != desired.claude_api {
+        if let Some(s) = lock_state().as_mut() {
+            for entry in s.snapshots.values_mut() {
+                entry.windows = UsageWindows::default();
+                entry.status_note = "Atualizando fonte...".into();
+            }
+        }
+    }
+    refresh_countdowns();
+    spawn_poll_thread();
+}
 fn show_context_menu(owner_hwnd: HWND) {
     let snap = match lock_state().as_ref() {
         Some(s) => ContextMenuSnapshot {
-            visible_sections:s.settings.visible_sections,
-            strings:s.i18n.strings().clone(),current_interval:s.settings.poll_interval_ms,
-            update_check_interval_secs:s.settings.update_check_interval_secs,
-            show_claude:s.settings.show_claude_code,show_chatgpt:s.settings.show_codex,
-            show_opencode_go:s.settings.show_opencode_go,widget_visible:s.settings.widget_visible,
-            only_over_chatgpt:s.settings.only_over_chatgpt,install_channel:s.install_channel,
-            update_status:s.update_status,bubble_size_logical:s.settings.bubble_size_logical,
-            reset_credits:crate::reset_credits::latest(),
-            compact:s.settings.compact_mode,
+            visible_sections: s.settings.visible_sections,
+            strings: s.i18n.strings().clone(),
+            current_interval: s.settings.poll_interval_ms,
+            update_check_interval_secs: s.settings.update_check_interval_secs,
+            show_claude: s.settings.show_claude_code,
+            show_chatgpt: s.settings.show_codex,
+            show_opencode_go: s.settings.show_opencode_go,
+            widget_visible: s.settings.widget_visible,
+            only_over_chatgpt: s.settings.only_over_chatgpt,
+            install_channel: s.install_channel,
+            update_status: s.update_status,
+            bubble_size_logical: s.settings.bubble_size_logical,
+            reset_credits: crate::reset_credits::latest(),
+            compact: s.settings.compact_mode,
         },
         None => return,
     };
-    let Some(menu) = build_context_menu(&snap,is_startup_enabled()) else { return };
+    let Some(menu) = build_context_menu(&snap, is_startup_enabled()) else {
+        return;
+    };
     unsafe {
-        let mut pt=POINT::default(); let _=GetCursorPos(&mut pt);
-        let _=SetForegroundWindow(owner_hwnd);
-        let _=TrackPopupMenu(menu.0,TPM_RIGHTBUTTON,pt.x,pt.y,0,owner_hwnd,None);
+        let mut pt = POINT::default();
+        let _ = GetCursorPos(&mut pt);
+        let _ = SetForegroundWindow(owner_hwnd);
+        let _ = TrackPopupMenu(menu.0, TPM_RIGHTBUTTON, pt.x, pt.y, 0, owner_hwnd, None);
     }
 }
 
 fn show_help(owner: HWND) {
     let strings = i18n::I18n::load().strings().clone();
-    let title = os::to_utf16_nul(&format!("{} (v{})",strings.window_title,env!("CARGO_PKG_VERSION")));
+    let title = os::to_utf16_nul(&format!(
+        "{} (v{})",
+        strings.window_title,
+        env!("CARGO_PKG_VERSION")
+    ));
     let body = os::to_utf16_nul(&strings.help_body);
-    unsafe { MessageBoxW(owner,PCWSTR(body.as_ptr()),PCWSTR(title.as_ptr()),MB_OK | MB_ICONINFORMATION); }
+    unsafe {
+        MessageBoxW(
+            owner,
+            PCWSTR(body.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
 }
 
 fn check_updates_now() {
     let hwnd = lock_state().as_ref().and_then(|s| {
-        if matches!(s.update_status,UpdateStatus::Checking | UpdateStatus::Applying) { None }
-        else { Some(s.msg_hwnd) }
+        if matches!(
+            s.update_status,
+            UpdateStatus::Checking | UpdateStatus::Applying
+        ) {
+            None
+        } else {
+            Some(s.msg_hwnd)
+        }
     });
-    if let Some(hwnd)=hwnd { begin_update_check(hwnd.to_hwnd()); }
+    if let Some(hwnd) = hwnd {
+        begin_update_check(hwnd.to_hwnd());
+    }
 }
 
 fn append_item(menu: HMENU, id: u16, label: &str, flags: MENU_ITEM_FLAGS) {
@@ -1447,8 +1867,10 @@ fn set_bubble_size(size_logical: i32) {
 /// Claim the full check/install cycle before spawning any worker. Both the
 /// timer and the menu go through this gate; downloading/installing owns it too.
 fn claim_update_cycle(status: &mut UpdateStatus) -> bool {
-    if matches!(status,UpdateStatus::Checking|UpdateStatus::Applying) { return false; }
-    *status=UpdateStatus::Checking;
+    if matches!(status, UpdateStatus::Checking | UpdateStatus::Applying) {
+        return false;
+    }
+    *status = UpdateStatus::Checking;
     true
 }
 
@@ -1456,20 +1878,29 @@ fn claim_update_cycle(status: &mut UpdateStatus) -> bool {
 /// Installer injection allows tests to exercise the automatic transition
 /// without replacing a real user installation.
 fn automatic_update_flow(
-    result:Result<CheckOutcome,update::Error>,
-    mut status:impl FnMut(UpdateStatus),
-    install:impl FnOnce(&update::Release)->Result<(),update::Error>,
-)->Result<bool,update::Error> {
+    result: Result<CheckOutcome, update::Error>,
+    mut status: impl FnMut(UpdateStatus),
+    install: impl FnOnce(&update::Release) -> Result<(), update::Error>,
+) -> Result<bool, update::Error> {
     match result {
-        Ok(CheckOutcome::UpToDate)=> { status(UpdateStatus::UpToDate); Ok(false) }
-        Ok(CheckOutcome::Available(release))=> {
+        Ok(CheckOutcome::UpToDate) => {
+            status(UpdateStatus::UpToDate);
+            Ok(false)
+        }
+        Ok(CheckOutcome::Available(release)) => {
             status(UpdateStatus::Applying);
             match install(&release) {
-                Ok(())=>Ok(true),
-                Err(e)=>{status(UpdateStatus::Failed);Err(e)}
+                Ok(()) => Ok(true),
+                Err(e) => {
+                    status(UpdateStatus::Failed);
+                    Err(e)
+                }
             }
         }
-        Err(e)=>{status(UpdateStatus::Failed);Err(e)}
+        Err(e) => {
+            status(UpdateStatus::Failed);
+            Err(e)
+        }
     }
 }
 
@@ -1477,51 +1908,80 @@ fn automatic_update_flow(
 mod automatic_update_tests {
     use super::*;
     use std::cell::RefCell;
-    fn release()->update::Release {
+    fn release() -> update::Release {
         update::Release {
-            version:update::release::Version {major:9,minor:0,patch:0},
-            asset_url:"https://example.invalid/fixture.exe".into(),asset_sha256:Some([7;32]),
+            version: update::release::Version {
+                major: 9,
+                minor: 0,
+                patch: 0,
+            },
+            asset_url: "https://example.invalid/fixture.exe".into(),
+            asset_sha256: Some([7; 32]),
         }
     }
     #[test]
     fn detecting_a_release_installs_it_without_a_second_action() {
         // The menu and timer both invoke the same claimed cycle.
-        for _trigger in ["menu","timer"] {
-            let mut status=UpdateStatus::Idle;
+        for _trigger in ["menu", "timer"] {
+            let mut status = UpdateStatus::Idle;
             assert!(claim_update_cycle(&mut status));
             assert!(!claim_update_cycle(&mut status));
-            let events=RefCell::new(Vec::new());
-            let installed=automatic_update_flow(Ok(CheckOutcome::Available(release())),
-                |next| { assert_eq!(next,UpdateStatus::Applying);events.borrow_mut().push("installing"); },
+            let events = RefCell::new(Vec::new());
+            let installed = automatic_update_flow(
+                Ok(CheckOutcome::Available(release())),
+                |next| {
+                    assert_eq!(next, UpdateStatus::Applying);
+                    events.borrow_mut().push("installing");
+                },
                 |r| {
-                    assert_eq!(r.version,release().version);assert_eq!(r.asset_sha256,Some([7;32]));
-                    events.borrow_mut().push("installed");Ok(())
-                }).unwrap();
-            assert!(installed);assert_eq!(*events.borrow(),["installing","installed"]);
+                    assert_eq!(r.version, release().version);
+                    assert_eq!(r.asset_sha256, Some([7; 32]));
+                    events.borrow_mut().push("installed");
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(installed);
+            assert_eq!(*events.borrow(), ["installing", "installed"]);
         }
     }
     #[test]
     fn current_or_failed_checks_never_invoke_the_installer() {
-        let state=RefCell::new(UpdateStatus::Checking);
-        assert!(!automatic_update_flow(Ok(CheckOutcome::UpToDate),|s|*state.borrow_mut()=s,
-            |_|panic!("must not install the current version")).unwrap());
-        assert_eq!(*state.borrow(),UpdateStatus::UpToDate);
-        assert!(automatic_update_flow(Err(update::Error::NoAsset),|s|*state.borrow_mut()=s,
-            |_|panic!("must not install after a failed check")).is_err());
-        assert_eq!(*state.borrow(),UpdateStatus::Failed);
+        let state = RefCell::new(UpdateStatus::Checking);
+        assert!(!automatic_update_flow(
+            Ok(CheckOutcome::UpToDate),
+            |s| *state.borrow_mut() = s,
+            |_| panic!("must not install the current version")
+        )
+        .unwrap());
+        assert_eq!(*state.borrow(), UpdateStatus::UpToDate);
+        assert!(automatic_update_flow(
+            Err(update::Error::NoAsset),
+            |s| *state.borrow_mut() = s,
+            |_| panic!("must not install after a failed check")
+        )
+        .is_err());
+        assert_eq!(*state.borrow(), UpdateStatus::Failed);
     }
     #[test]
     fn install_failure_releases_the_cycle_for_a_retry() {
-        let state=RefCell::new(UpdateStatus::Checking);
-        let result=automatic_update_flow(Ok(CheckOutcome::Available(release())),
-            |s|*state.borrow_mut()=s, |_| {
-                assert_eq!(*state.borrow(),UpdateStatus::Applying);
+        let state = RefCell::new(UpdateStatus::Checking);
+        let result = automatic_update_flow(
+            Ok(CheckOutcome::Available(release())),
+            |s| *state.borrow_mut() = s,
+            |_| {
+                assert_eq!(*state.borrow(), UpdateStatus::Applying);
                 assert!(!claim_update_cycle(&mut state.borrow_mut()));
-                Err(update::Error::ChecksumMismatch {expected:"fixture".into(),actual:"different".into()})
-            });
-        assert!(result.is_err());assert_eq!(*state.borrow(),UpdateStatus::Failed);
+                Err(update::Error::ChecksumMismatch {
+                    expected: "fixture".into(),
+                    actual: "different".into(),
+                })
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(*state.borrow(), UpdateStatus::Failed);
         assert!(claim_update_cycle(&mut state.borrow_mut()));
-        assert_eq!(*state.borrow(),UpdateStatus::Checking);
+        assert_eq!(*state.borrow(), UpdateStatus::Checking);
     }
 }
 
@@ -1555,41 +2015,67 @@ fn schedule_update_check_timer(hwnd: HWND) {
 }
 
 fn begin_update_check(hwnd: HWND) {
-    let (http,channel)= {
-        let mut guard=lock_state();
-        let Some(s)=guard.as_mut() else { return };
-        if !claim_update_cycle(&mut s.update_status) { return; }
-        (s.http.clone(),s.install_channel)
+    let (http, channel) = {
+        let mut guard = lock_state();
+        let Some(s) = guard.as_mut() else { return };
+        if !claim_update_cycle(&mut s.update_status) {
+            return;
+        }
+        (s.http.clone(), s.install_channel)
     };
-    let send_hwnd=SendHwnd::from_hwnd(hwnd);
+    let send_hwnd = SendHwnd::from_hwnd(hwnd);
     std::thread::spawn(move || {
-        let result=update::release::fetch_latest(&http);
-        let now=SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        let settings=lock_state().as_mut().map(|s| {
-            s.settings.last_update_check_unix=Some(now);
+        let result = update::release::fetch_latest(&http);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let settings = lock_state().as_mut().map(|s| {
+            s.settings.last_update_check_unix = Some(now);
             s.settings.clone()
         });
-        if let Some(ref settings)=settings { settings::save(settings); }
-        let installed=automatic_update_flow(result,
-            |status| { if let Some(s)=lock_state().as_mut() { s.update_status=status; } },
-            |release|match channel {
-                InstallChannel::Portable=>update::install::begin(&http,release),
-                InstallChannel::Winget=>Err(update::Error::NotWritable("Atualização por WinGet ainda indisponível".into())),
-            });
+        if let Some(ref settings) = settings {
+            settings::save(settings);
+        }
+        let installed = automatic_update_flow(
+            result,
+            |status| {
+                if let Some(s) = lock_state().as_mut() {
+                    s.update_status = status;
+                }
+            },
+            |release| match channel {
+                InstallChannel::Portable => update::install::begin(&http, release),
+                InstallChannel::Winget => Err(update::Error::NotWritable(
+                    "Atualização por WinGet ainda indisponível".into(),
+                )),
+            },
+        );
         match installed {
-            Ok(true)=>unsafe {
+            Ok(true) => unsafe {
                 // The verified replacement already launched its successor.
                 // Quit this process so the child can acquire the widget mutex.
-                let _=PostMessageW(send_hwnd.to_hwnd(),WM_APP_UPDATE_APPLIED,WPARAM(0),LPARAM(0));
+                let _ = PostMessageW(
+                    send_hwnd.to_hwnd(),
+                    WM_APP_UPDATE_APPLIED,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
             },
-            outcome=> {
-                if let Err(e)=outcome { log::error!("automatic update failed: {e}"); }
+            outcome => {
+                if let Err(e) = outcome {
+                    log::error!("automatic update failed: {e}");
+                }
                 // A user can change/disable the schedule while downloading.
                 // Use the current setting, not a stale copy from the check.
-                let interval=lock_state().as_ref().and_then(|s|s.settings.update_check_interval_secs);
-                if let Some(interval)=interval {
-                    let ms=(interval.saturating_mul(1000).min(u32::MAX as u64)) as u32;
-                    unsafe { SetTimer(send_hwnd.to_hwnd(),TIMER_UPDATE_CHECK,ms,None); }
+                let interval = lock_state()
+                    .as_ref()
+                    .and_then(|s| s.settings.update_check_interval_secs);
+                if let Some(interval) = interval {
+                    let ms = (interval.saturating_mul(1000).min(u32::MAX as u64)) as u32;
+                    unsafe {
+                        SetTimer(send_hwnd.to_hwnd(), TIMER_UPDATE_CHECK, ms, None);
+                    }
                 }
             }
         }
@@ -1670,120 +2156,263 @@ fn toggle_startup() {
 mod context_menu_tests {
     use super::*;
     #[derive(Debug)]
-    struct Entry { path:String, id:u16, flags:u32 }
-    fn inventory(menu:HMENU, prefix:&str, out:&mut Vec<Entry>) {
+    struct Entry {
+        path: String,
+        id: u16,
+        flags: u32,
+    }
+    fn inventory(menu: HMENU, prefix: &str, out: &mut Vec<Entry>) {
         unsafe {
             for pos in 0..GetMenuItemCount(menu) {
-                let mut buf=[0_u16;512];
-                let n=GetMenuStringW(menu,pos as u32,Some(&mut buf),MF_BYPOSITION);
-                let label=String::from_utf16_lossy(&buf[..n as usize]);
-                if label.is_empty() { continue; }
-                let path=if prefix.is_empty(){label}else{format!("{prefix} > {label}")};
-                let child=GetSubMenu(menu,pos);
+                let mut buf = [0_u16; 512];
+                let n = GetMenuStringW(menu, pos as u32, Some(&mut buf), MF_BYPOSITION);
+                let label = String::from_utf16_lossy(&buf[..n as usize]);
+                if label.is_empty() {
+                    continue;
+                }
+                let path = if prefix.is_empty() {
+                    label
+                } else {
+                    format!("{prefix} > {label}")
+                };
+                let child = GetSubMenu(menu, pos);
                 if child.0.is_null() {
-                    out.push(Entry {path,id:GetMenuItemID(menu,pos) as u16,flags:GetMenuState(menu,pos as u32,MF_BYPOSITION)});
-                } else { inventory(child,&path,out); }
+                    out.push(Entry {
+                        path,
+                        id: GetMenuItemID(menu, pos) as u16,
+                        flags: GetMenuState(menu, pos as u32, MF_BYPOSITION),
+                    });
+                } else {
+                    inventory(child, &path, out);
+                }
             }
         }
     }
     #[test]
     fn section_menu_checkmarks_follow_saved_choices() {
         for mask in 0..32 {
-            let mut s=snapshot(UpdateStatus::Idle);s.visible_sections=mask;
-            let menu=build_context_menu(&s,false).unwrap();let mut items=Vec::new();inventory(menu.0,"",&mut items);
-            for bit in 0..5 { let item=items.iter().find(|e|e.id==70+bit).unwrap();
-                assert_eq!(item.flags & MF_CHECKED.0 != 0,mask & (1<<bit)!=0); }
+            let mut s = snapshot(UpdateStatus::Idle);
+            s.visible_sections = mask;
+            let menu = build_context_menu(&s, false).unwrap();
+            let mut items = Vec::new();
+            inventory(menu.0, "", &mut items);
+            for bit in 0..5 {
+                let item = items.iter().find(|e| e.id == 70 + bit).unwrap();
+                assert_eq!(item.flags & MF_CHECKED.0 != 0, mask & (1 << bit) != 0);
+            }
         }
     }
     #[test]
     fn quick_update_is_in_the_root_menu_and_disabled_while_busy() {
-        for status in [UpdateStatus::Idle,UpdateStatus::Checking,UpdateStatus::Applying,UpdateStatus::UpToDate,UpdateStatus::Failed] {
-            let menu=build_context_menu(&snapshot(status),false).unwrap();
-            let mut items=Vec::new();inventory(menu.0,"",&mut items);
-            let item=items.iter().find(|e|e.id==IDM_QUICK_UPDATE).unwrap();
+        for status in [
+            UpdateStatus::Idle,
+            UpdateStatus::Checking,
+            UpdateStatus::Applying,
+            UpdateStatus::UpToDate,
+            UpdateStatus::Failed,
+        ] {
+            let menu = build_context_menu(&snapshot(status), false).unwrap();
+            let mut items = Vec::new();
+            inventory(menu.0, "", &mut items);
+            let item = items.iter().find(|e| e.id == IDM_QUICK_UPDATE).unwrap();
             assert!(!item.path.contains(" > "));
-            assert_eq!(item.flags & MF_GRAYED.0!=0,matches!(status,UpdateStatus::Checking|UpdateStatus::Applying));
-            assert!(items.iter().any(|e|e.id==IDM_VERSION_ACTION));
+            assert_eq!(
+                item.flags & MF_GRAYED.0 != 0,
+                matches!(status, UpdateStatus::Checking | UpdateStatus::Applying)
+            );
+            assert!(items.iter().any(|e| e.id == IDM_VERSION_ACTION));
         }
     }
-    fn snapshot(status:UpdateStatus)->ContextMenuSnapshot {
+    fn snapshot(status: UpdateStatus) -> ContextMenuSnapshot {
         ContextMenuSnapshot {
-            visible_sections:31,
-            strings:i18n::I18n::load().strings().clone(),current_interval:POLL_5_MIN,
-            update_check_interval_secs:Some(settings::UPDATE_CHECK_DAILY_SECS),
-            show_claude:false,show_chatgpt:true,show_opencode_go:false,widget_visible:true,
-            only_over_chatgpt:true,install_channel:InstallChannel::Portable,
-            update_status:status,bubble_size_logical:bubble::DEFAULT_BUBBLE_SIZE,
-            reset_credits:crate::reset_credits::Snapshot::default().view(),
-            compact:false,
+            visible_sections: 31,
+            strings: i18n::I18n::load().strings().clone(),
+            current_interval: POLL_5_MIN,
+            update_check_interval_secs: Some(settings::UPDATE_CHECK_DAILY_SECS),
+            show_claude: false,
+            show_chatgpt: true,
+            show_opencode_go: false,
+            widget_visible: true,
+            only_over_chatgpt: true,
+            install_channel: InstallChannel::Portable,
+            update_status: status,
+            bubble_size_logical: bubble::DEFAULT_BUBBLE_SIZE,
+            reset_credits: crate::reset_credits::Snapshot::default().view(),
+            compact: false,
         }
     }
     #[test]
     fn every_menu_state_preserves_actions_without_an_extra_install_button() {
-        let mut report=String::new();
-        for status in [UpdateStatus::Idle,UpdateStatus::Checking,UpdateStatus::UpToDate,
-            UpdateStatus::Applying,UpdateStatus::Failed] {
-            let snap=snapshot(status);
-            let menu=build_context_menu(&snap,true).unwrap();
-            let mut items=Vec::new();inventory(menu.0,"",&mut items);
-            let ids:std::collections::HashSet<_>=items.iter().filter(|e|e.id!=0).map(|e|e.id).collect();
-            assert_eq!(ids.len(),items.iter().filter(|e|e.id!=0).count(),"duplicate actionable ID");
-            for id in [IDM_REFRESH,IDM_EXIT,IDM_RESTART,IDM_HELP,IDM_COMPACT,IDM_DETAILS,IDM_FREQ_1MIN,IDM_FREQ_5MIN,
-                IDM_FREQ_15MIN,IDM_FREQ_1HOUR,IDM_MODEL_CLAUDE,IDM_MODEL_CHATGPT,IDM_MODEL_OPENCODE_GO,
-                IDM_START_WITH_WINDOWS,IDM_RESET_POSITION,IDM_VERSION_ACTION,IDM_ONLY_CHATGPT,
-                IDM_SIZE_SMALLER,IDM_SIZE_LARGER,IDM_RESET_SIZE,IDM_UPDATE_AUTO_OFF,IDM_UPDATE_AUTO_HOURLY,
-                IDM_UPDATE_AUTO_DAILY,IDM_UPDATE_AUTO_WEEKLY,tray::IDM_TOGGLE_WIDGET] { assert!(ids.contains(&id),"missing action {id}"); }
-            let search=items.iter().find(|e|e.id==IDM_VERSION_ACTION).unwrap();
-            assert!(search.path.ends_with(&format!("Buscar nova atualização (v{})",env!("CARGO_PKG_VERSION"))));
-            let busy=matches!(status,UpdateStatus::Checking|UpdateStatus::Applying);
-            assert_eq!(search.flags & MF_GRAYED.0 != 0,busy);
-            assert!(!ids.contains(&38),"the former extra installation action must not be required");
-            for id in [IDM_MODEL_CHATGPT,IDM_FREQ_5MIN,IDM_UPDATE_AUTO_DAILY,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET,IDM_ONLY_CHATGPT] {
-                assert!(items.iter().find(|e|e.id==id).unwrap().flags & MF_CHECKED.0 != 0);
+        let mut report = String::new();
+        for status in [
+            UpdateStatus::Idle,
+            UpdateStatus::Checking,
+            UpdateStatus::UpToDate,
+            UpdateStatus::Applying,
+            UpdateStatus::Failed,
+        ] {
+            let snap = snapshot(status);
+            let menu = build_context_menu(&snap, true).unwrap();
+            let mut items = Vec::new();
+            inventory(menu.0, "", &mut items);
+            let ids: std::collections::HashSet<_> =
+                items.iter().filter(|e| e.id != 0).map(|e| e.id).collect();
+            assert_eq!(
+                ids.len(),
+                items.iter().filter(|e| e.id != 0).count(),
+                "duplicate actionable ID"
+            );
+            for id in [
+                IDM_REFRESH,
+                IDM_EXIT,
+                IDM_RESTART,
+                IDM_HELP,
+                IDM_COMPACT,
+                IDM_DETAILS,
+                IDM_FREQ_1MIN,
+                IDM_FREQ_5MIN,
+                IDM_FREQ_15MIN,
+                IDM_FREQ_1HOUR,
+                IDM_MODEL_CLAUDE,
+                IDM_MODEL_CHATGPT,
+                IDM_MODEL_OPENCODE_GO,
+                IDM_START_WITH_WINDOWS,
+                IDM_RESET_POSITION,
+                IDM_VERSION_ACTION,
+                IDM_ONLY_CHATGPT,
+                IDM_SIZE_SMALLER,
+                IDM_SIZE_LARGER,
+                IDM_RESET_SIZE,
+                IDM_UPDATE_AUTO_OFF,
+                IDM_UPDATE_AUTO_HOURLY,
+                IDM_UPDATE_AUTO_DAILY,
+                IDM_UPDATE_AUTO_WEEKLY,
+                tray::IDM_TOGGLE_WIDGET,
+            ] {
+                assert!(ids.contains(&id), "missing action {id}");
             }
-            assert!(items.iter().find(|e|e.id==IDM_MODEL_OPENCODE_GO).unwrap().flags & MF_GRAYED.0 != 0);
+            let search = items.iter().find(|e| e.id == IDM_VERSION_ACTION).unwrap();
+            assert!(search.path.ends_with(&format!(
+                "Buscar nova atualização (v{})",
+                env!("CARGO_PKG_VERSION")
+            )));
+            let busy = matches!(status, UpdateStatus::Checking | UpdateStatus::Applying);
+            assert_eq!(search.flags & MF_GRAYED.0 != 0, busy);
+            assert!(
+                !ids.contains(&38),
+                "the former extra installation action must not be required"
+            );
+            for id in [
+                IDM_MODEL_CHATGPT,
+                IDM_FREQ_5MIN,
+                IDM_UPDATE_AUTO_DAILY,
+                IDM_START_WITH_WINDOWS,
+                tray::IDM_TOGGLE_WIDGET,
+                IDM_ONLY_CHATGPT,
+            ] {
+                assert!(items.iter().find(|e| e.id == id).unwrap().flags & MF_CHECKED.0 != 0);
+            }
+            assert!(
+                items
+                    .iter()
+                    .find(|e| e.id == IDM_MODEL_OPENCODE_GO)
+                    .unwrap()
+                    .flags
+                    & MF_GRAYED.0
+                    != 0
+            );
             for e in &items {
-                for old in ["Refresh","Settings","Providers","Controls","Check for updates","Update frequency","Start with Windows","Restart","Exit","Update failed"] {
-                    assert!(!e.path.contains(old),"untranslated label: {}",e.path);
+                for old in [
+                    "Refresh",
+                    "Settings",
+                    "Providers",
+                    "Controls",
+                    "Check for updates",
+                    "Update frequency",
+                    "Start with Windows",
+                    "Restart",
+                    "Exit",
+                    "Update failed",
+                ] {
+                    assert!(!e.path.contains(old), "untranslated label: {}", e.path);
                 }
             }
             report.push_str(&format!("\n{status:?}\n"));
-            for e in &items { report.push_str(&format!("{} [id={}, flags={}]\n",e.path,e.id,e.flags)); }
+            for e in &items {
+                report.push_str(&format!("{} [id={}, flags={}]\n", e.path, e.id, e.flags));
+            }
         }
-        if let Ok(path)=std::env::var("CODEX_WIDGET_MENU_AUDIT_PATH") { std::fs::write(path,report).unwrap(); }
+        if let Ok(path) = std::env::var("CODEX_WIDGET_MENU_AUDIT_PATH") {
+            std::fs::write(path, report).unwrap();
+        }
     }
     #[test]
     fn reset_credit_details_are_read_only_and_preserve_the_reported_count() {
-        let mut snap=snapshot(UpdateStatus::Idle);
-        snap.reset_credits=crate::reset_credits::Snapshot::parse(&serde_json::json!({
-            "rateLimitResetCredits":{"availableCount":2,"credits":[
-                {"id":"fixture-a","status":"available","expiresAt":2000000000_i64},
-                {"id":"fixture-b","status":"available","expiresAt":null}
-            ]}})).view();
-        let menu=build_context_menu(&snap,false).unwrap();
-        let mut items=Vec::new();inventory(menu.0,"",&mut items);
-        let resets:Vec<_>=items.iter().filter(|e|e.path.starts_with("Resets do Codex >")).collect();
-        assert!(resets.len()>=4);
-        assert!(resets.iter().all(|e|e.id==0 && e.flags&MF_GRAYED.0!=0));
-        assert!(resets.iter().any(|e|e.path.contains("Resets disponíveis na conta: 2")));
-        assert!(resets.iter().any(|e|e.path.contains("sem vencimento")));
-        assert!(resets.iter().any(|e|e.path.contains("hora local")));
+        let mut snap = snapshot(UpdateStatus::Idle);
+        snap.reset_credits = crate::reset_credits::Snapshot::parse(&serde_json::json!({
+        "rateLimitResetCredits":{"availableCount":2,"credits":[
+            {"id":"fixture-a","status":"available","expiresAt":2000000000_i64},
+            {"id":"fixture-b","status":"available","expiresAt":null}
+        ]}}))
+        .view();
+        let menu = build_context_menu(&snap, false).unwrap();
+        let mut items = Vec::new();
+        inventory(menu.0, "", &mut items);
+        let resets: Vec<_> = items
+            .iter()
+            .filter(|e| e.path.contains("Resets do Codex >"))
+            .collect();
+        assert!(resets.len() >= 4);
+        assert!(resets
+            .iter()
+            .all(|e| e.id == 0 && e.flags & MF_GRAYED.0 != 0));
+        assert!(resets
+            .iter()
+            .any(|e| e.path.contains("Resets disponíveis na conta: 2")));
+        assert!(resets.iter().any(|e| e.path.contains("sem vencimento")));
+        assert!(resets.iter().any(|e| e.path.contains("hora local")));
     }
 
     #[test]
     fn changed_preferences_and_size_limits_are_reflected_in_the_native_menu() {
-        let mut snap=snapshot(UpdateStatus::Idle);
-        snap.show_chatgpt=false;snap.show_claude=true;snap.only_over_chatgpt=false;snap.widget_visible=false;
-        snap.current_interval=POLL_1_HOUR;snap.update_check_interval_secs=None;snap.compact=true;
-        for width in [bubble::MIN_BUBBLE_SIZE,bubble::MAX_BUBBLE_SIZE] {
-            snap.bubble_size_logical=width;
-            let menu=build_context_menu(&snap,false).unwrap();
-            let mut items=Vec::new();inventory(menu.0,"",&mut items);
-            let flags=|id|items.iter().find(|e|e.id==id).unwrap().flags;
-            for id in [IDM_MODEL_CHATGPT,IDM_ONLY_CHATGPT,IDM_START_WITH_WINDOWS,tray::IDM_TOGGLE_WIDGET] { assert_eq!(flags(id)&MF_CHECKED.0,0); }
-            for id in [IDM_MODEL_CLAUDE,IDM_FREQ_1HOUR,IDM_UPDATE_AUTO_OFF,IDM_COMPACT] { assert_ne!(flags(id)&MF_CHECKED.0,0); }
-            assert_eq!(flags(IDM_SIZE_SMALLER)&MF_GRAYED.0!=0,width==bubble::MIN_BUBBLE_SIZE);
-            assert_eq!(flags(IDM_SIZE_LARGER)&MF_GRAYED.0!=0,width==bubble::MAX_BUBBLE_SIZE);
+        let mut snap = snapshot(UpdateStatus::Idle);
+        snap.show_chatgpt = false;
+        snap.show_claude = true;
+        snap.only_over_chatgpt = false;
+        snap.widget_visible = false;
+        snap.current_interval = POLL_1_HOUR;
+        snap.update_check_interval_secs = None;
+        snap.compact = true;
+        for width in [bubble::MIN_BUBBLE_SIZE, bubble::MAX_BUBBLE_SIZE] {
+            snap.bubble_size_logical = width;
+            let menu = build_context_menu(&snap, false).unwrap();
+            let mut items = Vec::new();
+            inventory(menu.0, "", &mut items);
+            let flags = |id| items.iter().find(|e| e.id == id).unwrap().flags;
+            for id in [
+                IDM_MODEL_CHATGPT,
+                IDM_ONLY_CHATGPT,
+                IDM_START_WITH_WINDOWS,
+                tray::IDM_TOGGLE_WIDGET,
+            ] {
+                assert_eq!(flags(id) & MF_CHECKED.0, 0);
+            }
+            for id in [
+                IDM_MODEL_CLAUDE,
+                IDM_FREQ_1HOUR,
+                IDM_UPDATE_AUTO_OFF,
+                IDM_COMPACT,
+            ] {
+                assert_ne!(flags(id) & MF_CHECKED.0, 0);
+            }
+            assert_eq!(
+                flags(IDM_SIZE_SMALLER) & MF_GRAYED.0 != 0,
+                width == bubble::MIN_BUBBLE_SIZE
+            );
+            assert_eq!(
+                flags(IDM_SIZE_LARGER) & MF_GRAYED.0 != 0,
+                width == bubble::MAX_BUBBLE_SIZE
+            );
         }
     }
 }

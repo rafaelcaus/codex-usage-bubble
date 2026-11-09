@@ -42,13 +42,17 @@ impl UsageSnapshot {
     /// Exactly the seven completed calendar dates before today. Missing is
     /// unknown, never an implicit zero, and today's partial total is excluded.
     pub fn average_previous_week(&self, today: chrono::NaiveDate) -> Option<u64> {
-        if self.fetched_at?.elapsed() > MAX_SAMPLE_AGE { return None; }
+        if self.fetched_at?.elapsed() > MAX_SAMPLE_AGE {
+            return None;
+        }
         let mut sum = 0_u128;
         for offset in 1..=7 {
             let date = today.checked_sub_signed(chrono::Duration::days(offset))?;
-            let mut matches = self.daily_buckets.iter().filter(|(d,_)| *d == date);
+            let mut matches = self.daily_buckets.iter().filter(|(d, _)| *d == date);
             let (_, n) = matches.next()?;
-            if matches.next().is_some() { return None; }
+            if matches.next().is_some() {
+                return None;
+            }
             sum += *n as u128;
         }
         u64::try_from((sum + 3) / 7).ok()
@@ -63,11 +67,15 @@ impl UsageSnapshot {
         if now.saturating_duration_since(self.fetched_at?) > MAX_SAMPLE_AGE {
             return None;
         }
-        let date = chrono::NaiveDate::parse_from_str(self.bucket_date.as_deref()?, "%Y-%m-%d").ok()?;
+        let date =
+            chrono::NaiveDate::parse_from_str(self.bucket_date.as_deref()?, "%Y-%m-%d").ok()?;
         Some((
             self.daily_tokens?,
             format!("Consumo {}:", date.format("%d/%m")),
-            format!("Tokens em {} (registro diario da conta)", date.format("%d/%m/%Y")),
+            format!(
+                "Tokens em {} (registro diario da conta)",
+                date.format("%d/%m/%Y")
+            ),
         ))
     }
 }
@@ -90,6 +98,12 @@ pub fn start() {
 fn worker() {
     let client = Client::new();
     loop {
+        if crate::external_usage::is_external(crate::usage::ProviderId::ChatGpt) {
+            *cell().lock().expect("appserver snapshot poisoned") = UsageSnapshot::default();
+            crate::reset_credits::store(None);
+            std::thread::sleep(Duration::from_secs(POLL_SECS));
+            continue;
+        }
         match cycle(&client) {
             Ok(snap) => {
                 *cell().lock().expect("appserver snapshot poisoned") = snap;
@@ -103,9 +117,12 @@ fn worker() {
         }
         // Independent of the daily aggregate: a usage-summary failure must
         // not hide a successful read of available reset credits.
-        match client.request("account/rateLimits/read",None) {
-            Ok(result)=>crate::reset_credits::store(Some(&result)),
-            Err(_)=> { crate::reset_credits::store(None);client.reset(); }
+        match client.request("account/rateLimits/read", None) {
+            Ok(result) => crate::reset_credits::store(Some(&result)),
+            Err(_) => {
+                crate::reset_credits::store(None);
+                client.reset();
+            }
         }
         std::thread::sleep(Duration::from_secs(POLL_SECS));
     }
@@ -126,7 +143,9 @@ fn as_i64(v: &serde_json::Value) -> Option<i64> {
 
 /// Pick the newest daily bucket (by startDate string, YYYY-MM-DD sorts).
 fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
-    let lifetime_tokens = v.pointer("/summary/lifetimeTokens").and_then(as_i64)
+    let lifetime_tokens = v
+        .pointer("/summary/lifetimeTokens")
+        .and_then(as_i64)
         .or_else(|| v.get("lifetimeTokens").and_then(as_i64));
     let mut best: Option<(String, i64)> = None;
     let mut daily_buckets = Vec::new();
@@ -136,11 +155,17 @@ fn parse_usage(v: &serde_json::Value) -> UsageSnapshot {
                 .get("startDate")
                 .and_then(|s| s.as_str())
                 .filter(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok())
-            else { continue };
-            let Some(tokens) = b.get("tokens").and_then(as_i64).filter(|n| *n >= 0)
-            else { continue };
+            else {
+                continue;
+            };
+            let Some(tokens) = b.get("tokens").and_then(as_i64).filter(|n| *n >= 0) else {
+                continue;
+            };
             let date = date.to_string();
-            daily_buckets.push((chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").unwrap(), tokens));
+            daily_buckets.push((
+                chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").unwrap(),
+                tokens,
+            ));
             let newer = best
                 .as_ref()
                 .map(|(d, _)| date.as_str() > d.as_str())
@@ -172,7 +197,9 @@ fn codex_candidates() -> Vec<PathBuf> {
     // .cmd shims. No credentials or machine-specific paths are distributed.
     if let Some(home) = dirs::home_dir() {
         let native = home.join("AppData/Roaming/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe");
-        if native.is_file() { out.push(native); }
+        if native.is_file() {
+            out.push(native);
+        }
     }
     // Whatever `codex` resolves to on PATH (npm shim .cmd included).
     let mut where_cmd = Command::new("where.exe");
@@ -190,7 +217,12 @@ fn codex_candidates() -> Vec<PathBuf> {
     }
     // npm global default layout.
     if let Some(home) = dirs::home_dir() {
-        out.push(home.join("AppData").join("Roaming").join("npm").join("codex.cmd"));
+        out.push(
+            home.join("AppData")
+                .join("Roaming")
+                .join("npm")
+                .join("codex.cmd"),
+        );
     }
     out
 }
@@ -246,7 +278,10 @@ impl Client {
         }
         let mut child = spawned.ok_or_else(|| {
             let mut warned = self.warned_missing.lock().expect("warn poisoned");
-            let msg = format!("codex app-server nao iniciou. Tentativas: {}", failures.join("; "));
+            let msg = format!(
+                "codex app-server nao iniciou. Tentativas: {}",
+                failures.join("; ")
+            );
             if !*warned {
                 log::warn!("{msg}");
                 *warned = true;
@@ -311,7 +346,11 @@ impl Client {
         stdin.flush().map_err(|e| e.to_string())
     }
 
-    fn notify(self: &Arc<Self>, method: &str, params: Option<serde_json::Value>) -> Result<(), String> {
+    fn notify(
+        self: &Arc<Self>,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(), String> {
         let mut msg = serde_json::json!({ "method": method });
         if let Some(p) = params {
             msg["params"] = p;
@@ -336,10 +375,7 @@ impl Client {
             .expect("pending poisoned")
             .insert(id, tx);
         if let Err(e) = self.write_message(&msg) {
-            self.pending
-                .lock()
-                .expect("pending poisoned")
-                .remove(&id);
+            self.pending.lock().expect("pending poisoned").remove(&id);
             self.reset();
             return Err(e);
         }
@@ -425,7 +461,9 @@ mod tests {
         assert_eq!(s.bucket_date.as_deref(), Some("2026-10-30"));
         assert!(parse_usage(&serde_json::json!({
             "dailyUsageBuckets": [{"startDate": "2026-11-01", "tokens": null}]
-        })).daily_reading().is_none());
+        }))
+        .daily_reading()
+        .is_none());
     }
 
     #[test]
@@ -448,24 +486,33 @@ mod tests {
         }));
         let at = s.fetched_at.unwrap();
         assert!(s.daily_reading_at(at + Duration::from_secs(60)).is_some());
-        assert!(s.daily_reading_at(at + MAX_SAMPLE_AGE + Duration::from_secs(1)).is_none());
+        assert!(s
+            .daily_reading_at(at + MAX_SAMPLE_AGE + Duration::from_secs(1))
+            .is_none());
         assert!(UsageSnapshot::default().daily_reading().is_none());
     }
 
     #[test]
     fn week_average_uses_seven_complete_days_and_real_zero() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026,11,1).unwrap();
-        let mut buckets: Vec<_> = (1..=7).map(|offset| serde_json::json!({
-            "startDate":(today-chrono::Duration::days(offset)).to_string(),
-            "tokens": if offset==7 {0} else {70}
-        })).collect();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap();
+        let mut buckets: Vec<_> = (1..=7)
+            .map(|offset| {
+                serde_json::json!({
+                    "startDate":(today-chrono::Duration::days(offset)).to_string(),
+                    "tokens": if offset==7 {0} else {70}
+                })
+            })
+            .collect();
         buckets.push(serde_json::json!({"startDate":"2026-11-01","tokens":999999}));
         buckets.push(serde_json::json!({"startDate":"2026-10-24","tokens":999999}));
         let snapshot = parse_usage(&serde_json::json!({"dailyUsageBuckets":buckets}));
-        assert_eq!(snapshot.average_previous_week(today),Some(60));
+        assert_eq!(snapshot.average_previous_week(today), Some(60));
         buckets.remove(0);
-        assert_eq!(parse_usage(&serde_json::json!({"dailyUsageBuckets":buckets}))
-            .average_previous_week(today),None);
+        assert_eq!(
+            parse_usage(&serde_json::json!({"dailyUsageBuckets":buckets}))
+                .average_previous_week(today),
+            None
+        );
     }
 
     #[test]

@@ -131,6 +131,10 @@ fn position_on_any_monitor(x: i32, y: i32) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
+    #[serde(default)]
+    pub codex_api: crate::external_usage::ApiConfig,
+    #[serde(default)]
+    pub claude_api: crate::external_usage::ApiConfig,
     #[serde(default = "default_visible_sections")]
     pub visible_sections: u8,
     #[serde(default)]
@@ -159,11 +163,15 @@ pub struct Settings {
     pub only_over_chatgpt: bool,
 }
 
-fn default_visible_sections() -> u8 { 31 }
+fn default_visible_sections() -> u8 {
+    31
+}
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            codex_api: Default::default(),
+            claude_api: Default::default(),
             visible_sections: default_visible_sections(),
             show_claude_code: default_show_claude(),
             compact_mode: false,
@@ -246,12 +254,15 @@ mod tests {
 
     #[test]
     fn section_choices_survive_roundtrip_and_old_settings_show_everything() {
-        for mask in 0..32 { let mut s=Settings::default();s.visible_sections=mask;
-            let restored:Settings=serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
-            assert_eq!(restored.visible_sections,mask);
+        for mask in 0..32 {
+            let mut s = Settings::default();
+            s.visible_sections = mask;
+            let restored: Settings =
+                serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(restored.visible_sections, mask);
         }
-        let old:Settings=serde_json::from_str("{}").unwrap();
-        assert_eq!(old.visible_sections,31);
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.visible_sections, 31);
         assert!(old.show_claude_code && old.show_codex);
     }
     #[test]
@@ -285,12 +296,16 @@ mod tests {
 
     #[test]
     fn compact_preference_survives_a_settings_round_trip() {
-        let mut settings=Settings::default();
-        settings.compact_mode=true;
-        let restored:Settings=serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        let mut settings = Settings::default();
+        settings.compact_mode = true;
+        let restored: Settings =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert!(restored.compact_mode);
-        assert_eq!(restored.poll_interval_ms,settings.poll_interval_ms);
-        assert_eq!(restored.update_check_interval_secs,settings.update_check_interval_secs);
+        assert_eq!(restored.poll_interval_ms, settings.poll_interval_ms);
+        assert_eq!(
+            restored.update_check_interval_secs,
+            settings.update_check_interval_secs
+        );
     }
 
     #[test]

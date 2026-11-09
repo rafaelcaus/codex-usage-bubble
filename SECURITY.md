@@ -23,3 +23,9 @@ O ZIP local tem hashes para verificação de integridade. Se alguém adulterar t
 Código público pode ser copiado e receber propostas por fork/PR, conforme a licença. Alterar a versão oficial exige permissão de escrita. Proteja a conta mantenedora com autenticação forte e revise colaboradores, chaves e permissões. O instalador não altera essas configurações.
 
 Novas releases precisam passar pelos testes. Workflow de release roda por tags ou ação manual, sem executar conteúdo de PR de desconhecidos com token de escrita.
+
+## APIs externas
+
+A chave informada localmente fica no Gerenciador de Credenciais do usuário Windows, vinculada ao provedor e ao hash da URL exata. Ela não entra em settings.json nem no pacote. O widget não reutiliza tokens OAuth das assinaturas para autenticar gateways. A consulta é somente GET sobre HTTPS, sem redirecionamentos, URL com senha ou chave em parâmetros. O usuário deve confiar no endereço configurado: é para esse fornecedor que a chave será enviada. Outros programas executados como o mesmo usuário podem ter acesso às credenciais; isso não é isolamento contra software malicioso local.
+
+O fornecedor precisa expor consumo e limite do mesmo período. Campos ausentes, limite zero ou respostas inválidas não viram uma cota presumida. O aplicativo não chama geração de texto nem endpoints POST de reset para testar a integração.

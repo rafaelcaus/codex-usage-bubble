@@ -6,15 +6,16 @@
 
 // Original infrastructure.
 mod appserver;
-mod history;
-mod reset_credits;
 mod codex_tokens;
-mod local_usage;
 mod creds;
 mod diag;
+mod external_usage;
+mod history;
 mod i18n;
+mod local_usage;
 mod net;
 mod os;
+mod reset_credits;
 mod samples;
 mod tray;
 mod update;
@@ -25,6 +26,7 @@ mod usage_color;
 mod app;
 mod bubble;
 mod panel;
+mod preferences;
 mod settings;
 
 fn main() {
@@ -71,6 +73,7 @@ fn main() {
     if diagnose_enabled {
         log::info!("entering app::run (wait_pid={wait_pid:?} updated_to={updated_to:?})");
     }
+    if args.iter().any(|a|a=="--settings") && app::open_existing_preferences() {return;}
     app::run(AppArgs {
         wait_pid_present: wait_pid.is_some(),
         updated_to,

@@ -110,6 +110,7 @@ pub struct RequestBuilder<'a> {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    no_redirects: bool,
 }
 
 impl<'a> RequestBuilder<'a> {
@@ -120,7 +121,13 @@ impl<'a> RequestBuilder<'a> {
             url: url.to_string(),
             headers: Vec::new(),
             body: None,
+            no_redirects: false,
         }
+    }
+
+    pub fn no_redirects(mut self) -> Self {
+        self.no_redirects = true;
+        self
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -178,6 +185,19 @@ impl<'a> RequestBuilder<'a> {
             });
         }
         let _request_guard = HandleGuard(request);
+        if self.no_redirects {
+            let policy: u32 = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+            unsafe {
+                WinHttpSetOption(
+                    Some(request),
+                    WINHTTP_OPTION_REDIRECT_POLICY,
+                    Some(&policy.to_ne_bytes()),
+                )
+            }
+            .map_err(|_| Error::Win {
+                context: "disable redirects".into(),
+            })?;
+        }
 
         // Combine headers into a single CRLF-separated string. The binding
         // takes a UTF-16 slice; length is derived from the slice and no
@@ -211,12 +231,11 @@ impl<'a> RequestBuilder<'a> {
             Some(body_bytes.as_ptr() as *const c_void)
         };
         let body_len = body_bytes.len() as u32;
-        unsafe {
-            WinHttpSendRequest(request, None, body_ptr, body_len, body_len, 0)
-        }
-        .map_err(|e| Error::Win {
-            context: format!("WinHttpSendRequest: {e}"),
-        })?;
+        unsafe { WinHttpSendRequest(request, None, body_ptr, body_len, body_len, 0) }.map_err(
+            |e| Error::Win {
+                context: format!("WinHttpSendRequest: {e}"),
+            },
+        )?;
 
         unsafe { WinHttpReceiveResponse(request, null_mut()) }.map_err(|e| Error::Win {
             context: format!("WinHttpReceiveResponse: {e}"),

@@ -66,7 +66,7 @@ try {
         $shortcut.TargetPath=$target;$shortcut.WorkingDirectory=$dir;$shortcut.Save()
         Write-Host 'Instalado: CODEX + CLAUDE. Atualizacoes automaticas diarias ativas.' -ForegroundColor Green
         Write-Host 'Cada pessoa usa suas proprias contas. Se necessario, instale os CLIs oficiais e faca login com codex login e claude.'
-        Write-Host 'Botao direito > Configuracoes > Informacoes no widget: escolha o que mostrar.'
+        Write-Host 'Botao direito > Abrir configuracoes > Informacoes: escolha o que mostrar.'
         Write-Host 'Sem login no GitHub; sem permissao de escrita no repositorio.'
     } finally {if($supervisor){Start-ScheduledTask -TaskName $supervisor.TaskName}}
 } finally {if($tempDownload -and (Test-Path -LiteralPath $tempDownload)){Remove-Item -LiteralPath $tempDownload}}

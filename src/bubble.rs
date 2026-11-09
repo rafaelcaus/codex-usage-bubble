@@ -34,7 +34,7 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::HiDpi::*;
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture,ReleaseCapture,SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{
     ExtractIconExW, SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETTASKBARPOS,
     APPBARDATA,
@@ -57,9 +57,9 @@ use crate::usage::ProviderId;
 // `bubble_height_logical`) — aspect tapers from 3:1 at the small end toward
 // 2.6:1 at the large end so the bars look proportionally chunkier as the
 // bubble grows.
-    pub const MIN_BUBBLE_SIZE: i32 = 50;
+pub const MIN_BUBBLE_SIZE: i32 = 50;
 pub const MAX_BUBBLE_SIZE: i32 = 360;
-    pub const DEFAULT_BUBBLE_SIZE: i32 = 50;
+pub const DEFAULT_BUBBLE_SIZE: i32 = 50;
 pub const RESIZE_STEP_LOGICAL: i32 = 20;
 const SNAP_ZONE_LOGICAL: i32 = 12;
 const CORNER_SNAP_ZONE_LOGICAL: i32 = 32;
@@ -86,8 +86,8 @@ pub struct BubbleConfig {
     pub today_text: String,
     pub today_title: String,
     pub average_text: String,
-    pub credits_title:String,
-    pub credits_text:String,
+    pub credits_title: String,
+    pub credits_text: String,
     pub quota_label: String,
     pub secondary_label: String,
     pub quota_duration_secs: Option<u64>,
@@ -98,20 +98,36 @@ pub struct BubbleConfig {
 /// Fork (Rafael): minimal vertical card — ring + ONE countdown caption.
 /// Height is computed from the exact same content math as the layout below
 /// (in logical units), so the window always fits its content at any DPI.
-fn bubble_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bool) -> i32 {
-    bubble_content_height_logical(width_logical,dual,credits,compact) + 2 * SHADOW_MARGIN_LOGICAL
+fn bubble_height_logical(width_logical: i32, dual: bool, credits: bool, compact: bool) -> i32 {
+    bubble_content_height_logical(width_logical, dual, credits, compact) + 2 * SHADOW_MARGIN_LOGICAL
 }
 
 static VISIBLE_SECTIONS: AtomicU8 = AtomicU8::new(31);
 pub fn set_visible_sections(mask: u8) {
     VISIBLE_SECTIONS.store(mask & 31, Ordering::Relaxed);
-    let windows: Vec<_> = lock_bubbles().iter().map(|(h,b)| (HWND(*h as *mut _), b.compact)).collect();
-    for (hwnd, compact) in windows { set_compact(hwnd, compact); }
+    let windows: Vec<_> = lock_bubbles()
+        .iter()
+        .map(|(h, b)| (HWND(*h as *mut _), b.compact))
+        .collect();
+    for (hwnd, compact) in windows {
+        set_compact(hwnd, compact);
+    }
 }
-fn bubble_content_height_logical(width_logical: i32, dual:bool, credits:bool, compact:bool) -> i32 {
-    content_height(width_logical,dual,credits,compact,VISIBLE_SECTIONS.load(Ordering::Relaxed))
+fn bubble_content_height_logical(
+    width_logical: i32,
+    dual: bool,
+    credits: bool,
+    compact: bool,
+) -> i32 {
+    content_height(
+        width_logical,
+        dual,
+        credits,
+        compact,
+        VISIBLE_SECTIONS.load(Ordering::Relaxed),
+    )
 }
-fn content_height(width_logical: i32, dual:bool, credits:bool, compact:bool, mask:u8) -> i32 {
+fn content_height(width_logical: i32, dual: bool, credits: bool, compact: bool, mask: u8) -> i32 {
     let pad = width_logical * 6 / 100;
     let ring = width_logical - 2 * pad;
     let big = (ring * 24 / 100).max(4);
@@ -121,9 +137,14 @@ fn content_height(width_logical: i32, dual:bool, credits:bool, compact:bool, mas
     let th = small + 2;
     let vh = small + 5;
     let header = (width_logical * 14 / 100).max(12) + 4;
-    if compact { return header+pad+ring+g1+22+pad+4; }
-    let rows = i32::from(mask & 1 != 0) + i32::from(dual && mask & 2 != 0)
-        + i32::from(credits && mask & 4 != 0) + i32::from(credits && mask & 8 != 0) + i32::from(credits && mask & 16 != 0);
+    if compact {
+        return header + pad + ring + g1 + 22 + pad + 4;
+    }
+    let rows = i32::from(mask & 1 != 0)
+        + i32::from(dual && mask & 2 != 0)
+        + i32::from(credits && mask & 4 != 0)
+        + i32::from(credits && mask & 8 != 0)
+        + i32::from(credits && mask & 16 != 0);
     header + pad + ring + g1 + rows * (th + 2 + vh + 4) + pad + 4 + 22
 }
 
@@ -188,15 +209,25 @@ pub fn register_class() {
 
 /// Create a bubble window. Returns the HWND. The caller (app::run) owns the
 /// message-loop dispatch.
-pub fn create(config: BubbleConfig) -> HWND { create_inner(config,true) }
+pub fn create(config: BubbleConfig) -> HWND {
+    create_inner(config, true)
+}
 
-fn create_inner(config:BubbleConfig, visible:bool)->HWND {
+fn create_inner(config: BubbleConfig, visible: bool) -> HWND {
     register_class();
     let initial_size_logical = config.size_logical.clamp(MIN_BUBBLE_SIZE, MAX_BUBBLE_SIZE);
     let dpi_for_create = crate::os::dpi::for_system();
     let width_px = scale_to_dpi(initial_size_logical, dpi_for_create)
         + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi_for_create);
-    let height_px = scale_to_dpi(bubble_height_logical(initial_size_logical,config.weekly_pct.is_some(),config.model==ProviderId::ChatGpt,config.compact), dpi_for_create);
+    let height_px = scale_to_dpi(
+        bubble_height_logical(
+            initial_size_logical,
+            config.weekly_pct.is_some(),
+            config.model == ProviderId::ChatGpt,
+            config.compact,
+        ),
+        dpi_for_create,
+    );
     let (x, y) = config
         .position
         .unwrap_or_else(|| default_position(width_px, height_px, config.model));
@@ -266,10 +297,13 @@ fn create_inner(config:BubbleConfig, visible:bool)->HWND {
             today_text: config.today_text,
             today_title: config.today_title,
             average_text: config.average_text,
-            credits_title:config.credits_title,credits_text:config.credits_text,
-            quota_label:config.quota_label,secondary_label:config.secondary_label,quota_duration_secs:config.quota_duration_secs,
+            credits_title: config.credits_title,
+            credits_text: config.credits_text,
+            quota_label: config.quota_label,
+            secondary_label: config.secondary_label,
+            quota_duration_secs: config.quota_duration_secs,
             is_dark: config.is_dark,
-            compact:config.compact,
+            compact: config.compact,
             pointer: None,
             hidden_by_fullscreen: false,
             user_hidden: false,
@@ -337,66 +371,115 @@ fn app_icons() -> (HICON, HICON) {
     (HICON(big as *mut _), HICON(small as *mut _))
 }
 
-pub fn is_compact(hwnd:HWND)->bool {
-    lock_bubbles().get(&(hwnd.0 as isize)).is_some_and(|b|b.compact)
+pub fn is_compact(hwnd: HWND) -> bool {
+    lock_bubbles()
+        .get(&(hwnd.0 as isize))
+        .is_some_and(|b| b.compact)
 }
-pub fn set_compact(hwnd:HWND,compact:bool) {
-    let geometry={
-        let mut bubbles=lock_bubbles();
-        let Some(b)=bubbles.get_mut(&(hwnd.0 as isize)) else {return};
-        if b.compact==compact {return}
-        b.compact=compact;
-        (b.size_logical,b.dpi,b.weekly_pct.is_some(),b.model==ProviderId::ChatGpt)
+pub fn set_compact(hwnd: HWND, compact: bool) {
+    let geometry = {
+        let mut bubbles = lock_bubbles();
+        let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else {
+            return;
+        };
+        if b.compact == compact {
+            return;
+        }
+        b.compact = compact;
+        (
+            b.size_logical,
+            b.dpi,
+            b.weekly_pct.is_some(),
+            b.model == ProviderId::ChatGpt,
+        )
     };
-    let (width,dpi,dual,credits)=geometry;
+    let (width, dpi, dual, credits) = geometry;
     unsafe {
-        let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
-        let h=scale_to_dpi(bubble_height_logical(width,dual,credits,compact),dpi);
-        let _=SetWindowPos(hwnd,HWND::default(),0,0,w,h,SWP_NOMOVE|SWP_NOZORDER|SWP_NOACTIVATE);
+        let w = scale_to_dpi(width + 2 * SHADOW_MARGIN_LOGICAL, dpi);
+        let h = scale_to_dpi(bubble_height_logical(width, dual, credits, compact), dpi);
+        let _ = SetWindowPos(
+            hwnd,
+            HWND::default(),
+            0,
+            0,
+            w,
+            h,
+            SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
     clamp_into_work_area(hwnd);
     render(hwnd);
 }
-fn gesture_is_drag(start:Option<(i32,i32)>,end:(i32,i32))->bool {
-    start.is_some_and(|(x,y)|(end.0-x).abs()>=8 || (end.1-y).abs()>=8)
+fn gesture_is_drag(start: Option<(i32, i32)>, end: (i32, i32)) -> bool {
+    start.is_some_and(|(x, y)| (end.0 - x).abs() >= 8 || (end.1 - y).abs() >= 8)
 }
-fn toggle_hit(layout:&BubbleLayout,point:POINT)->bool {
-    let dx=point.x as f32-layout.ring_cx;
-    let dy=point.y as f32-layout.ring_cy;
-    let radius=layout.ring_radius+layout.ring_stroke_w;
-    let rect=&layout.toggle_rect;
-    dx*dx+dy*dy<=radius*radius ||
-        (point.x>=rect.left && point.x<rect.right && point.y>=rect.top && point.y<rect.bottom)
+fn toggle_hit(layout: &BubbleLayout, point: POINT) -> bool {
+    let dx = point.x as f32 - layout.ring_cx;
+    let dy = point.y as f32 - layout.ring_cy;
+    let radius = layout.ring_radius + layout.ring_stroke_w;
+    let rect = &layout.toggle_rect;
+    dx * dx + dy * dy <= radius * radius
+        || (point.x >= rect.left
+            && point.x < rect.right
+            && point.y >= rect.top
+            && point.y < rect.bottom)
 }
-pub fn is_toggle_point(hwnd:HWND,point:POINT)->bool {
-    let bubbles=lock_bubbles();let Some(b)=bubbles.get(&(hwnd.0 as isize)) else {return false};
-    let layout=compute_bubble_layout(b.size_logical,b.dpi,HDC::default(),b.weekly_pct.is_some(),b.model==ProviderId::ChatGpt,b.compact);
-    toggle_hit(&layout,point)
+pub fn is_toggle_point(hwnd: HWND, point: POINT) -> bool {
+    let bubbles = lock_bubbles();
+    let Some(b) = bubbles.get(&(hwnd.0 as isize)) else {
+        return false;
+    };
+    let layout = compute_bubble_layout(
+        b.size_logical,
+        b.dpi,
+        HDC::default(),
+        b.weekly_pct.is_some(),
+        b.model == ProviderId::ChatGpt,
+        b.compact,
+    );
+    toggle_hit(&layout, point)
 }
 
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 struct PointerGesture {
-    start:POINT,
-    origin:(i32,i32),
-    dragged:bool,
+    start: POINT,
+    origin: (i32, i32),
+    dragged: bool,
 }
 impl PointerGesture {
-    fn advance(&mut self,cursor:POINT)->Option<(i32,i32)> {
-        self.dragged|=gesture_is_drag(Some((self.start.x,self.start.y)),(cursor.x,cursor.y));
-        self.dragged.then_some((self.origin.0+cursor.x-self.start.x,self.origin.1+cursor.y-self.start.y))
+    fn advance(&mut self, cursor: POINT) -> Option<(i32, i32)> {
+        self.dragged |= gesture_is_drag(Some((self.start.x, self.start.y)), (cursor.x, cursor.y));
+        self.dragged.then_some((
+            self.origin.0 + cursor.x - self.start.x,
+            self.origin.1 + cursor.y - self.start.y,
+        ))
     }
 }
-fn client_cursor(hwnd:HWND,lparam:LPARAM)->Option<(POINT,POINT)> {
-    let local=lparam_to_point(lparam);
-    let mut screen=local;
-    unsafe {ClientToScreen(hwnd,&mut screen).as_bool().then_some((local,screen))}
+fn client_cursor(hwnd: HWND, lparam: LPARAM) -> Option<(POINT, POINT)> {
+    let local = lparam_to_point(lparam);
+    let mut screen = local;
+    unsafe {
+        ClientToScreen(hwnd, &mut screen)
+            .as_bool()
+            .then_some((local, screen))
+    }
 }
-fn move_pointer_window(hwnd:HWND,position:Option<(i32,i32)>) {
-    if let Some((x,y))=position {
+fn move_pointer_window(hwnd: HWND, position: Option<(i32, i32)>) {
+    if let Some((x, y)) = position {
         unsafe {
-            let mut rect=RECT::default();
-            if GetWindowRect(hwnd,&mut rect).is_ok() && rect.left==x && rect.top==y {return;}
-            let _=SetWindowPos(hwnd,HWND::default(),x,y,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE);
+            let mut rect = RECT::default();
+            if GetWindowRect(hwnd, &mut rect).is_ok() && rect.left == x && rect.top == y {
+                return;
+            }
+            let _ = SetWindowPos(
+                hwnd,
+                HWND::default(),
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
 }
@@ -415,13 +498,15 @@ pub fn update_data(
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
-    credits_title:String,
-    credits_text:String,
+    credits_title: String,
+    credits_text: String,
 ) {
     let resize = {
         let mut bubbles = lock_bubbles();
-        let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else { return; };
-        let changed=b.weekly_pct.is_some()!=weekly_pct.is_some();
+        let Some(b) = bubbles.get_mut(&(hwnd.0 as isize)) else {
+            return;
+        };
+        let changed = b.weekly_pct.is_some() != weekly_pct.is_some();
         b.session_pct = session_pct;
         b.session_text = session_text;
         b.session_resets_at = session_resets_at;
@@ -431,19 +516,46 @@ pub fn update_data(
         b.today_text = today_text;
         b.today_title = today_title;
         b.average_text = average_text;
-        b.credits_title=credits_title;b.credits_text=credits_text;
-        b.quota_label=quota_label;b.secondary_label=secondary_label;b.quota_duration_secs=quota_duration_secs;
-        changed.then_some((b.size_logical,b.dpi,b.weekly_pct.is_some()))
+        b.credits_title = credits_title;
+        b.credits_text = credits_text;
+        b.quota_label = quota_label;
+        b.secondary_label = secondary_label;
+        b.quota_duration_secs = quota_duration_secs;
+        changed.then_some((b.size_logical, b.dpi, b.weekly_pct.is_some()))
     };
-    if let Some((width,dpi,dual))=resize {
+    if let Some((width, dpi, dual)) = resize {
         unsafe {
-            let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
-            let w=scale_to_dpi(width+2*SHADOW_MARGIN_LOGICAL,dpi);
-            let h=scale_to_dpi(bubble_height_logical(width,dual,model(hwnd)==Some(ProviderId::ChatGpt),is_compact(hwnd)),dpi);
-            let mut info=MONITORINFO {cbSize:std::mem::size_of::<MONITORINFO>() as u32,..Default::default()};
-            let monitor=MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST);
-            let y=if GetMonitorInfoW(monitor,&mut info).as_bool(){rect.top.min(info.rcWork.bottom-h).max(info.rcWork.top)}else{rect.top};
-            let _=SetWindowPos(hwnd,HWND::default(),rect.left,y,w,h,SWP_NOZORDER|SWP_NOACTIVATE);
+            let mut rect = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut rect);
+            let w = scale_to_dpi(width + 2 * SHADOW_MARGIN_LOGICAL, dpi);
+            let h = scale_to_dpi(
+                bubble_height_logical(
+                    width,
+                    dual,
+                    model(hwnd) == Some(ProviderId::ChatGpt),
+                    is_compact(hwnd),
+                ),
+                dpi,
+            );
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let y = if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                rect.top.min(info.rcWork.bottom - h).max(info.rcWork.top)
+            } else {
+                rect.top
+            };
+            let _ = SetWindowPos(
+                hwnd,
+                HWND::default(),
+                rect.left,
+                y,
+                w,
+                h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
         }
     }
     sync_pulse_timer(hwnd);
@@ -575,8 +687,8 @@ struct BubbleState {
     today_text: String,
     today_title: String,
     average_text: String,
-    credits_title:String,
-    credits_text:String,
+    credits_title: String,
+    credits_text: String,
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
@@ -622,50 +734,71 @@ unsafe extern "system" fn wnd_proc(
         WM_NCHITTEST => hit_test(hwnd, lparam),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
-            if let Some((_,screen))=client_cursor(hwnd,lparam) {
-                let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
-                if let Some(b)=lock_bubbles().get_mut(&(hwnd.0 as isize)) {
-                    b.pointer=Some(PointerGesture {start:screen,origin:(rect.left,rect.top),dragged:false});
+            if let Some((_, screen)) = client_cursor(hwnd, lparam) {
+                let mut rect = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut rect);
+                if let Some(b) = lock_bubbles().get_mut(&(hwnd.0 as isize)) {
+                    b.pointer = Some(PointerGesture {
+                        start: screen,
+                        origin: (rect.left, rect.top),
+                        dragged: false,
+                    });
                 }
                 // Hidden-window regression tests inject messages directly;
                 // they must not take capture away from the user's desktop.
-                if IsWindowVisible(hwnd).as_bool() {SetCapture(hwnd);}
+                if IsWindowVisible(hwnd).as_bool() {
+                    SetCapture(hwnd);
+                }
             }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            if let Some((_,screen))=client_cursor(hwnd,lparam) {
-                let target=lock_bubbles().get_mut(&(hwnd.0 as isize))
-                    .and_then(|b|b.pointer.as_mut()).and_then(|p|p.advance(screen));
-                move_pointer_window(hwnd,target);
+            if let Some((_, screen)) = client_cursor(hwnd, lparam) {
+                let target = lock_bubbles()
+                    .get_mut(&(hwnd.0 as isize))
+                    .and_then(|b| b.pointer.as_mut())
+                    .and_then(|p| p.advance(screen));
+                move_pointer_window(hwnd, target);
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let cursor=client_cursor(hwnd,lparam);
-            let gesture=lock_bubbles().get_mut(&(hwnd.0 as isize)).and_then(|b|b.pointer.take());
-            if GetCapture()==hwnd {let _=ReleaseCapture();}
-            if let (Some((local,screen)),Some(mut gesture))=(cursor,gesture) {
-                move_pointer_window(hwnd,gesture.advance(screen));
+            let cursor = client_cursor(hwnd, lparam);
+            let gesture = lock_bubbles()
+                .get_mut(&(hwnd.0 as isize))
+                .and_then(|b| b.pointer.take());
+            if GetCapture() == hwnd {
+                let _ = ReleaseCapture();
+            }
+            if let (Some((local, screen)), Some(mut gesture)) = (cursor, gesture) {
+                move_pointer_window(hwnd, gesture.advance(screen));
                 if gesture.dragged {
                     snap_to_edge(hwnd);
-                    if let Some(model)=model(hwnd) {
-                        if let Some(pos)=position(hwnd) {dispatch(|cb|(cb.on_moved)(model,pos));}
+                    if let Some(model) = model(hwnd) {
+                        if let Some(pos) = position(hwnd) {
+                            dispatch(|cb| (cb.on_moved)(model, pos));
+                        }
                     }
-                } else if hit_test_point(hwnd,screen).0==HTCLIENT as isize {
-                    if let Some(model)=model(hwnd) {dispatch(|cb|(cb.on_click)(hwnd,model,local));}
+                } else if hit_test_point(hwnd, screen).0 == HTCLIENT as isize {
+                    if let Some(model) = model(hwnd) {
+                        dispatch(|cb| (cb.on_click)(hwnd, model, local));
+                    }
                 }
             }
             LRESULT(0)
         }
         WM_CAPTURECHANGED | WM_CANCELMODE => {
-            if let Some(b)=lock_bubbles().get_mut(&(hwnd.0 as isize)) {b.pointer=None;}
-            if msg==WM_CANCELMODE && GetCapture()==hwnd {let _=ReleaseCapture();}
+            if let Some(b) = lock_bubbles().get_mut(&(hwnd.0 as isize)) {
+                b.pointer = None;
+            }
+            if msg == WM_CANCELMODE && GetCapture() == hwnd {
+                let _ = ReleaseCapture();
+            }
             LRESULT(0)
         }
         WM_RBUTTONUP => {
-            if let (Some(model),Some((_,screen)))=(model(hwnd),client_cursor(hwnd,lparam)) {
-                dispatch(|cb|(cb.on_right_click)(hwnd,model,screen));
+            if let (Some(model), Some((_, screen))) = (model(hwnd), client_cursor(hwnd, lparam)) {
+                dispatch(|cb| (cb.on_right_click)(hwnd, model, screen));
             }
             LRESULT(0)
         }
@@ -742,8 +875,10 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {hit_test_point(hwnd,lparam_to_point(lparam))}
-fn hit_test_point(hwnd:HWND,pt:POINT)->LRESULT {
+fn hit_test(hwnd: HWND, lparam: LPARAM) -> LRESULT {
+    hit_test_point(hwnd, lparam_to_point(lparam))
+}
+fn hit_test_point(hwnd: HWND, pt: POINT) -> LRESULT {
     let mut r = RECT::default();
     unsafe {
         if GetWindowRect(hwnd, &mut r).is_err() {
@@ -819,9 +954,16 @@ pub fn set_size_logical(hwnd: HWND, size_logical: i32) {
         b.size_logical = new_logical;
         (new_logical, b.dpi, b.weekly_pct.is_some())
     };
-    let width_px = scale_to_dpi(new_logical, dpi)
-        + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
-    let height_px = scale_to_dpi(bubble_height_logical(new_logical,dual,model(hwnd)==Some(ProviderId::ChatGpt),is_compact(hwnd)), dpi);
+    let width_px = scale_to_dpi(new_logical, dpi) + 2 * scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
+    let height_px = scale_to_dpi(
+        bubble_height_logical(
+            new_logical,
+            dual,
+            model(hwnd) == Some(ProviderId::ChatGpt),
+            is_compact(hwnd),
+        ),
+        dpi,
+    );
     let mut r = RECT::default();
     unsafe {
         let _ = GetWindowRect(hwnd, &mut r);
@@ -1272,7 +1414,8 @@ fn describe_foreground(fg: HWND) -> String {
     }
 }
 
-fn foreground_image_file_name(pid: u32) -> Option<String> {    unsafe {
+fn foreground_image_file_name(pid: u32) -> Option<String> {
+    unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut len: u32 = 512;
         let mut buf = vec![0u16; len as usize];
@@ -1573,23 +1716,49 @@ struct BubbleLayout {
     today_value_rect: RECT,
     average_title_rect: RECT,
     average_value_rect: RECT,
-    credits_title_rect:RECT,
-    credits_value_rect:RECT,
-    toggle_rect:RECT,
-    toggle_font_px:i32,
+    credits_title_rect: RECT,
+    credits_value_rect: RECT,
+    toggle_rect: RECT,
+    toggle_font_px: i32,
     big_font_px: i32,
     small_font_px: i32,
     main_font_px: i32,
 }
 
-fn compute_bubble_layout(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool, compact:bool) -> BubbleLayout {
-    layout_with_sections(size_logical,dpi,mem_dc,dual,credits,compact,VISIBLE_SECTIONS.load(Ordering::Relaxed))
+fn compute_bubble_layout(
+    size_logical: i32,
+    dpi: u32,
+    mem_dc: HDC,
+    dual: bool,
+    credits: bool,
+    compact: bool,
+) -> BubbleLayout {
+    layout_with_sections(
+        size_logical,
+        dpi,
+        mem_dc,
+        dual,
+        credits,
+        compact,
+        VISIBLE_SECTIONS.load(Ordering::Relaxed),
+    )
 }
-fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, credits:bool, compact:bool, mask:u8) -> BubbleLayout {
+fn layout_with_sections(
+    size_logical: i32,
+    dpi: u32,
+    mem_dc: HDC,
+    dual: bool,
+    credits: bool,
+    compact: bool,
+    mask: u8,
+) -> BubbleLayout {
     // Content box (the visible card). The canvas adds a shadow margin all
     // around so the soft drop shadow never clips at the window edge.
     let width_px = scale_to_dpi(size_logical, dpi);
-    let height_px = scale_to_dpi(content_height(size_logical,dual,credits,compact,mask), dpi);
+    let height_px = scale_to_dpi(
+        content_height(size_logical, dual, credits, compact, mask),
+        dpi,
+    );
     let margin_px = scale_to_dpi(SHADOW_MARGIN_LOGICAL, dpi);
     let canvas_w = width_px + 2 * margin_px;
     let canvas_h = height_px + 2 * margin_px;
@@ -1608,8 +1777,7 @@ fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cre
     // Inner ring renders the remaining-time arc, proportional to the ring.
     let time_ring_stroke_w = (ring_stroke_w * 0.55).max(1.0);
     let time_gap = ((ring_d * 3 / 100) as f32).max(1.0);
-    let time_ring_radius =
-        (ring_radius - ring_stroke_w - time_gap).max(time_ring_stroke_w);
+    let time_ring_radius = (ring_radius - ring_stroke_w - time_gap).max(time_ring_stroke_w);
 
     let big_font_px = (ring_d * 24 / 100).max(4);
     let small_font_px = ((big_font_px * 40) / 100).max(3);
@@ -1657,9 +1825,21 @@ fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cre
         bottom: ty + value_h,
     };
     ty += value_h + pair_gap;
-    let mut secondary_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
-    let mut secondary_value_rect=RECT {left:ox+pad,top:ty+title_h+line_gap,right:ox+width_px-pad,bottom:ty+title_h+line_gap+value_h};
-    if dual { ty+=title_h+line_gap+value_h+pair_gap; }
+    let mut secondary_title_rect = RECT {
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + title_h,
+    };
+    let mut secondary_value_rect = RECT {
+        left: ox + pad,
+        top: ty + title_h + line_gap,
+        right: ox + width_px - pad,
+        bottom: ty + title_h + line_gap + value_h,
+    };
+    if dual {
+        ty += title_h + line_gap + value_h + pair_gap;
+    }
     let mut today_title_rect = RECT {
         left: ox + pad,
         top: ty,
@@ -1675,29 +1855,78 @@ fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cre
     };
     ty += value_h + pair_gap;
     let mut average_title_rect = RECT {
-        left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + title_h,
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + title_h,
     };
     ty += title_h + line_gap;
     let mut average_value_rect = RECT {
-        left: ox + pad, top: ty, right: ox + width_px - pad, bottom: ty + value_h,
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + value_h,
     };
-    ty+=value_h+pair_gap;
-    let mut credits_title_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+title_h};
-    ty+=title_h+line_gap;
-    let mut credits_value_rect=RECT {left:ox+pad,top:ty,right:ox+width_px-pad,bottom:ty+value_h};
-    let mut packed_y=oy+pad+ring_d+ring_gap;
-    for (visible,title,value) in [
-        (mask&1!=0,&mut reset_title_rect,&mut countdown_rect),
-        (dual && mask&2!=0,&mut secondary_title_rect,&mut secondary_value_rect),
-        (credits && mask&4!=0,&mut today_title_rect,&mut today_value_rect),
-        (credits && mask&8!=0,&mut average_title_rect,&mut average_value_rect),
-        (credits && mask&16!=0,&mut credits_title_rect,&mut credits_value_rect)] {
-        if visible { title.top=packed_y;title.bottom=packed_y+title_h;
-            value.top=title.bottom+line_gap;value.bottom=value.top+value_h;packed_y=value.bottom+pair_gap; }
-        else { *title=RECT::default();*value=RECT::default(); }
+    ty += value_h + pair_gap;
+    let mut credits_title_rect = RECT {
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + title_h,
+    };
+    ty += title_h + line_gap;
+    let mut credits_value_rect = RECT {
+        left: ox + pad,
+        top: ty,
+        right: ox + width_px - pad,
+        bottom: ty + value_h,
+    };
+    let mut packed_y = oy + pad + ring_d + ring_gap;
+    for (visible, title, value) in [
+        (mask & 1 != 0, &mut reset_title_rect, &mut countdown_rect),
+        (
+            dual && mask & 2 != 0,
+            &mut secondary_title_rect,
+            &mut secondary_value_rect,
+        ),
+        (
+            credits && mask & 4 != 0,
+            &mut today_title_rect,
+            &mut today_value_rect,
+        ),
+        (
+            credits && mask & 8 != 0,
+            &mut average_title_rect,
+            &mut average_value_rect,
+        ),
+        (
+            credits && mask & 16 != 0,
+            &mut credits_title_rect,
+            &mut credits_value_rect,
+        ),
+    ] {
+        if visible {
+            title.top = packed_y;
+            title.bottom = packed_y + title_h;
+            value.top = title.bottom + line_gap;
+            value.bottom = value.top + value_h;
+            packed_y = value.bottom + pair_gap;
+        } else {
+            *title = RECT::default();
+            *value = RECT::default();
+        }
     }
-    let toggle_top=if compact {oy+pad+ring_d+ring_gap} else {packed_y};
-    let toggle_rect=RECT {left:ox+pad,top:toggle_top,right:ox+width_px-pad,bottom:toggle_top+scale_to_dpi(22,dpi)};
+    let toggle_top = if compact {
+        oy + pad + ring_d + ring_gap
+    } else {
+        packed_y
+    };
+    let toggle_rect = RECT {
+        left: ox + pad,
+        top: toggle_top,
+        right: ox + width_px - pad,
+        bottom: toggle_top + scale_to_dpi(22, dpi),
+    };
     let _ = mem_dc;
 
     BubbleLayout {
@@ -1711,7 +1940,12 @@ fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cre
         ring_stroke_w,
         time_ring_radius,
         time_ring_stroke_w,
-        provider_rect: RECT { left: margin_px, top: margin_px + 2, right: canvas_w - margin_px, bottom: margin_px + header_px },
+        provider_rect: RECT {
+            left: margin_px,
+            top: margin_px + 2,
+            right: canvas_w - margin_px,
+            bottom: margin_px + header_px,
+        },
         resta_label_rect,
         pct_rect,
         reset_title_rect,
@@ -1725,13 +1959,12 @@ fn layout_with_sections(size_logical: i32, dpi: u32, mem_dc: HDC, dual:bool, cre
         credits_title_rect,
         credits_value_rect,
         toggle_rect,
-        toggle_font_px:scale_to_dpi(10,dpi),
+        toggle_font_px: scale_to_dpi(10, dpi),
         big_font_px,
         small_font_px,
         main_font_px,
     }
 }
-
 
 /// Fill an axis-aligned rounded rect (correct for any radius, unlike the old
 /// two-circle stadium shortcut which only fits full pills).
@@ -1762,7 +1995,13 @@ fn fill_rounded_rect(pixmap: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32
 /// Soft drop shadow painted directly into the (premultiplied) pixmap BEFORE
 /// the card background. Signed-distance falloff over the shadow margin:
 /// alpha peaks at the card edge and fades quadratically outward.
-fn paint_drop_shadow(pixmap: &mut Pixmap, canvas_w: i32, canvas_h: i32, margin: i32, corner_r: i32) {
+fn paint_drop_shadow(
+    pixmap: &mut Pixmap,
+    canvas_w: i32,
+    canvas_h: i32,
+    margin: i32,
+    corner_r: i32,
+) {
     if margin <= 0 || canvas_w <= 0 || canvas_h <= 0 {
         return;
     }
@@ -1797,7 +2036,6 @@ fn paint_drop_shadow(pixmap: &mut Pixmap, canvas_w: i32, canvas_h: i32, margin: 
         }
     }
 }
-
 
 /// Render the bubble's shape into a fresh tiny-skia `Pixmap`. The Pixmap is
 /// premultiplied RGBA at one byte per channel — the caller copies it into the
@@ -1843,8 +2081,6 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         );
     }
 
-
-
     // ---- Primary quota ring ----
     {
         // Track: full circle in muted color.
@@ -1881,9 +2117,10 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
                 );
                 match grad {
                     Some(shader) => paint.shader = shader,
-                    None => paint.set_color(rgb_to_skia(
-                        crate::usage_color::accent_color_for(inputs.model, true),
-                    )),
+                    None => paint.set_color(rgb_to_skia(crate::usage_color::accent_color_for(
+                        inputs.model,
+                        true,
+                    ))),
                 }
                 paint.anti_alias = true;
                 let mut stroke = Stroke::default();
@@ -1909,7 +2146,10 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
         if let Some(p) = pb.finish() {
             pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
         }
-        if let Some(frac) = inputs.quota_duration_secs.and_then(|duration|remaining_fraction(inputs.session_resets_at,duration)) {
+        if let Some(frac) = inputs
+            .quota_duration_secs
+            .and_then(|duration| remaining_fraction(inputs.session_resets_at, duration))
+        {
             if frac > 0.0 {
                 let mut paint = Paint::default();
                 paint.set_color(rgb_to_skia(time_fill));
@@ -1928,7 +2168,6 @@ fn paint_bubble_pixmap(layout: &BubbleLayout, inputs: &PaintInputs) -> Option<Pi
             }
         }
     }
-
 
     Some(pixmap)
 }
@@ -2073,8 +2312,8 @@ struct PaintInputs {
     today_text: String,
     today_title: String,
     average_text: String,
-    credits_title:String,
-    credits_text:String,
+    credits_title: String,
+    credits_text: String,
     quota_label: String,
     secondary_label: String,
     quota_duration_secs: Option<u64>,
@@ -2103,12 +2342,15 @@ fn render(hwnd: HWND) {
                 today_text: b.today_text.clone(),
                 today_title: b.today_title.clone(),
                 average_text: b.average_text.clone(),
-                credits_title:b.credits_title.clone(),credits_text:b.credits_text.clone(),
-                quota_label:b.quota_label.clone(),secondary_label:b.secondary_label.clone(),quota_duration_secs:b.quota_duration_secs,
+                credits_title: b.credits_title.clone(),
+                credits_text: b.credits_text.clone(),
+                quota_label: b.quota_label.clone(),
+                secondary_label: b.secondary_label.clone(),
+                quota_duration_secs: b.quota_duration_secs,
                 // Fork: bubble card is always dark (dashboard look); the
                 // expanded panel keeps following the real OS theme.
                 is_dark: true,
-                compact:b.compact,
+                compact: b.compact,
                 pulse_phase: b.pulse_phase,
             },
         )
@@ -2124,7 +2366,14 @@ fn render(hwnd: HWND) {
             ReleaseDC(hwnd, screen_dc);
             return;
         }
-        let layout = compute_bubble_layout(size_logical, dpi, mem_dc, inputs.weekly_pct.is_some(),inputs.model==ProviderId::ChatGpt,inputs.compact);
+        let layout = compute_bubble_layout(
+            size_logical,
+            dpi,
+            mem_dc,
+            inputs.weekly_pct.is_some(),
+            inputs.model == ProviderId::ChatGpt,
+            inputs.compact,
+        );
 
         static RENDER_LOGGED: AtomicBool = AtomicBool::new(false);
         if !RENDER_LOGGED.swap(true, Ordering::Relaxed) {
@@ -2244,7 +2493,14 @@ fn brighten(c: Color, t: f64) -> Color {
 /// the ring, centered primary caption below it, weekly caption at the bottom.
 /// Title line: small semibold muted, centered. Skips empty text.
 #[allow(clippy::too_many_arguments)]
-fn draw_title_line(hdc: HDC, _font_name: &[u16], font: HFONT, color: Color, rect: &RECT, text: &str) {
+fn draw_title_line(
+    hdc: HDC,
+    _font_name: &[u16],
+    font: HFONT,
+    color: Color,
+    rect: &RECT,
+    text: &str,
+) {
     if text.is_empty() || rect.bottom <= rect.top || rect.right <= rect.left {
         return;
     }
@@ -2305,11 +2561,39 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
 
         let prev_font = SelectObject(hdc, small_font);
 
-        let provider = match inputs.model { ProviderId::ChatGpt => "CODEX", ProviderId::Claude => "CLAUDE", ProviderId::OpenCodeGo => "OPENCODE" };
-        draw_title_line(hdc, &font_name, small_font, text_color, &layout.provider_rect, provider);
+        let provider = match inputs.model {
+            ProviderId::ChatGpt => {
+                if crate::external_usage::is_external(ProviderId::ChatGpt) {
+                    "CODEX · API"
+                } else {
+                    "CODEX"
+                }
+            }
+            ProviderId::Claude => {
+                if crate::external_usage::is_external(ProviderId::Claude) {
+                    "CLAUDE · API"
+                } else {
+                    "CLAUDE"
+                }
+            }
+            ProviderId::OpenCodeGo => "OPENCODE",
+        };
+        draw_title_line(
+            hdc,
+            &font_name,
+            small_font,
+            text_color,
+            &layout.provider_rect,
+            provider,
+        );
         // "RESTA": full-contrast so it stays readable at tiny sizes.
         SetTextColor(hdc, COLORREF(text_color.into_colorref()));
-        draw_text_in_rect(hdc, &layout.resta_label_rect, &format!("{} RESTA",inputs.quota_label), DT_CENTER);
+        draw_text_in_rect(
+            hdc,
+            &layout.resta_label_rect,
+            &format!("{} RESTA", inputs.quota_label),
+            DT_CENTER,
+        );
 
         // Big remaining-% glyph centered in the ring.
         SelectObject(hdc, big_font);
@@ -2320,74 +2604,127 @@ fn paint_bubble_text(hdc: HDC, layout: &BubbleLayout, inputs: &PaintInputs) {
         };
         draw_text_in_rect(hdc, &layout.pct_rect, &pct_text, DT_CENTER);
 
-
         if !inputs.compact {
-        // Reset title + precise value.
-        draw_title_line(
-            hdc,
-            &font_name,
-            small_font,
-            muted_color,
-            &layout.reset_title_rect,
-            &format!("{} · renova em:",inputs.quota_label),
-        );
-        draw_value_line(
-            hdc,
-            &font_name,
-            layout.main_font_px + 3,
-            COLORREF(0x00FFFFFF),
-            &layout.countdown_rect,
-            &inputs.session_text,
-        );
-        if let Some(used)=inputs.weekly_pct {
-            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.secondary_title_rect,
-                &format!("{} · {:.0}% restantes",inputs.secondary_label,100.0-used));
-            let renewal=if inputs.weekly_text.is_empty(){"Renovação indisponível".into()}else{format!("Renova em {}",inputs.weekly_text)};
-            draw_value_line(hdc,&font_name,layout.main_font_px+3,COLORREF(0x00FFFFFF),&layout.secondary_value_rect,&renewal);
-        }
-        // Local daily tokens and the completed-day account average.
-        draw_title_line(
-            hdc,
-            &font_name,
-            small_font,
-            muted_color,
-            &layout.today_title_rect,
-            &inputs.today_title,
-        );
-        draw_value_line(
-            hdc,
-            &font_name,
-            layout.main_font_px + 3,
-            COLORREF(0x00FFFFFF),
-            &layout.today_value_rect,
-            &inputs.today_text,
-        );
-        if inputs.model == ProviderId::ChatGpt {
-            draw_title_line(hdc, &font_name, small_font, muted_color,
-                &layout.average_title_rect, "Média 7d da conta:");
-            draw_value_line(hdc, &font_name, layout.main_font_px + 3,
-                COLORREF(0x00FFFFFF), &layout.average_value_rect, &inputs.average_text);
-            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.credits_title_rect,&inputs.credits_title);
-            draw_title_line(hdc,&font_name,small_font,muted_color,&layout.credits_value_rect,&inputs.credits_text);
-        }
-
-
+            // Reset title + precise value.
+            draw_title_line(
+                hdc,
+                &font_name,
+                small_font,
+                muted_color,
+                &layout.reset_title_rect,
+                &format!("{} · renova em:", inputs.quota_label),
+            );
+            draw_value_line(
+                hdc,
+                &font_name,
+                layout.main_font_px + 3,
+                COLORREF(0x00FFFFFF),
+                &layout.countdown_rect,
+                &inputs.session_text,
+            );
+            if let Some(used) = inputs.weekly_pct {
+                draw_title_line(
+                    hdc,
+                    &font_name,
+                    small_font,
+                    muted_color,
+                    &layout.secondary_title_rect,
+                    &format!(
+                        "{} · {:.0}% restantes",
+                        inputs.secondary_label,
+                        100.0 - used
+                    ),
+                );
+                let renewal = if inputs.weekly_text.is_empty() {
+                    "Renovação indisponível".into()
+                } else {
+                    format!("Renova em {}", inputs.weekly_text)
+                };
+                draw_value_line(
+                    hdc,
+                    &font_name,
+                    layout.main_font_px + 3,
+                    COLORREF(0x00FFFFFF),
+                    &layout.secondary_value_rect,
+                    &renewal,
+                );
+            }
+            // Local daily tokens and the completed-day account average.
+            draw_title_line(
+                hdc,
+                &font_name,
+                small_font,
+                muted_color,
+                &layout.today_title_rect,
+                &inputs.today_title,
+            );
+            draw_value_line(
+                hdc,
+                &font_name,
+                layout.main_font_px + 3,
+                COLORREF(0x00FFFFFF),
+                &layout.today_value_rect,
+                &inputs.today_text,
+            );
+            if inputs.model == ProviderId::ChatGpt {
+                draw_title_line(
+                    hdc,
+                    &font_name,
+                    small_font,
+                    muted_color,
+                    &layout.average_title_rect,
+                    "Média 7d da conta:",
+                );
+                draw_value_line(
+                    hdc,
+                    &font_name,
+                    layout.main_font_px + 3,
+                    COLORREF(0x00FFFFFF),
+                    &layout.average_value_rect,
+                    &inputs.average_text,
+                );
+                draw_title_line(
+                    hdc,
+                    &font_name,
+                    small_font,
+                    muted_color,
+                    &layout.credits_title_rect,
+                    &inputs.credits_title,
+                );
+                draw_title_line(
+                    hdc,
+                    &font_name,
+                    small_font,
+                    muted_color,
+                    &layout.credits_value_rect,
+                    &inputs.credits_text,
+                );
+            }
         }
         // One visible affordance in both modes; ring clicks use the same action.
-        let label=if inputs.compact {"Ver mais"}else{"Ver menos"};
-        let mut button_px=layout.toggle_font_px;
-        while button_px>4 && measure_text_w(hdc,label,button_px)>layout.toggle_rect.right-layout.toggle_rect.left-4 {button_px-=1;}
-        let toggle_font=create_font(button_px,&font_name,FW_NORMAL.0 as i32);
-        let before_toggle=SelectObject(hdc,toggle_font);
-        SetTextColor(hdc,COLORREF(Color::from_hex("#A8A8B8").into_colorref()));
-        draw_text_in_rect(hdc,&layout.toggle_rect,label,DT_CENTER);
-        SelectObject(hdc,before_toggle);let _=DeleteObject(toggle_font);
+        let label = if inputs.compact {
+            "Ver mais"
+        } else {
+            "Ver menos"
+        };
+        let mut button_px = layout.toggle_font_px;
+        while button_px > 4
+            && measure_text_w(hdc, label, button_px)
+                > layout.toggle_rect.right - layout.toggle_rect.left - 4
+        {
+            button_px -= 1;
+        }
+        let toggle_font = create_font(button_px, &font_name, FW_NORMAL.0 as i32);
+        let before_toggle = SelectObject(hdc, toggle_font);
+        SetTextColor(hdc, COLORREF(Color::from_hex("#A8A8B8").into_colorref()));
+        draw_text_in_rect(hdc, &layout.toggle_rect, label, DT_CENTER);
+        SelectObject(hdc, before_toggle);
+        let _ = DeleteObject(toggle_font);
         SelectObject(hdc, prev_font);
         let _ = DeleteObject(big_font);
         let _ = DeleteObject(small_font);
     }
 }
-
 
 /// Draw `text` into `rect` with the given horizontal alignment flag, vertically
 /// centered. The DT_NOCLIP flag preserves ascenders/descenders that would
@@ -2452,156 +2789,303 @@ mod metric_layout_tests {
     #[test]
     fn native_press_release_toggles_once_without_a_caption_move_loop() {
         use std::sync::atomic::AtomicUsize;
-        static CLICKS:AtomicUsize=AtomicUsize::new(0);
-        static MOVES:AtomicUsize=AtomicUsize::new(0);
-        fn clicked(hwnd:HWND,_model:ProviderId,point:POINT) {
-            if is_toggle_point(hwnd,point) {
-                CLICKS.fetch_add(1,Ordering::SeqCst);
-                set_compact(hwnd,!is_compact(hwnd));
+        static CLICKS: AtomicUsize = AtomicUsize::new(0);
+        static MOVES: AtomicUsize = AtomicUsize::new(0);
+        fn clicked(hwnd: HWND, _model: ProviderId, point: POINT) {
+            if is_toggle_point(hwnd, point) {
+                CLICKS.fetch_add(1, Ordering::SeqCst);
+                set_compact(hwnd, !is_compact(hwnd));
             }
         }
         install_callbacks(Callbacks {
-            on_click:clicked,on_right_click:|_,_,_|{},on_moved:|_,_|{MOVES.fetch_add(1,Ordering::SeqCst);},
-            on_resized:|_,_|{},on_menu_command:|_,_|{},on_settings_changed:||{},
+            on_click: clicked,
+            on_right_click: |_, _, _| {},
+            on_moved: |_, _| {
+                MOVES.fetch_add(1, Ordering::SeqCst);
+            },
+            on_resized: |_, _| {},
+            on_menu_command: |_, _| {},
+            on_settings_changed: || {},
         });
-        let hwnd=create_inner(BubbleConfig {
-            model:ProviderId::ChatGpt,size_logical:120,position:Some((100,100)),
-            session_pct:Some(70.0),session_text:"6 dias".into(),session_resets_at:None,
-            weekly_pct:None,weekly_text:String::new(),weekly_resets_at:None,
-            today_text:String::new(),today_title:String::new(),average_text:String::new(),
-            credits_title:String::new(),credits_text:String::new(),quota_label:"7d".into(),
-            secondary_label:String::new(),quota_duration_secs:Some(604800),is_dark:true,compact:true,
-        },false);
-        assert_ne!(hwnd,HWND::default());
-        fn point(hwnd:HWND,button:bool)->POINT {
-            let guard=lock_bubbles();let b=guard.get(&(hwnd.0 as isize)).unwrap();
-            let l=compute_bubble_layout(b.size_logical,b.dpi,HDC::default(),false,true,b.compact);
-            if button {POINT{x:(l.toggle_rect.left+l.toggle_rect.right)/2,y:(l.toggle_rect.top+l.toggle_rect.bottom)/2}}
-            else {POINT{x:l.ring_cx as i32,y:l.ring_cy as i32}}
+        let hwnd = create_inner(
+            BubbleConfig {
+                model: ProviderId::ChatGpt,
+                size_logical: 120,
+                position: Some((100, 100)),
+                session_pct: Some(70.0),
+                session_text: "6 dias".into(),
+                session_resets_at: None,
+                weekly_pct: None,
+                weekly_text: String::new(),
+                weekly_resets_at: None,
+                today_text: String::new(),
+                today_title: String::new(),
+                average_text: String::new(),
+                credits_title: String::new(),
+                credits_text: String::new(),
+                quota_label: "7d".into(),
+                secondary_label: String::new(),
+                quota_duration_secs: Some(604800),
+                is_dark: true,
+                compact: true,
+            },
+            false,
+        );
+        assert_ne!(hwnd, HWND::default());
+        fn point(hwnd: HWND, button: bool) -> POINT {
+            let guard = lock_bubbles();
+            let b = guard.get(&(hwnd.0 as isize)).unwrap();
+            let l = compute_bubble_layout(
+                b.size_logical,
+                b.dpi,
+                HDC::default(),
+                false,
+                true,
+                b.compact,
+            );
+            if button {
+                POINT {
+                    x: (l.toggle_rect.left + l.toggle_rect.right) / 2,
+                    y: (l.toggle_rect.top + l.toggle_rect.bottom) / 2,
+                }
+            } else {
+                POINT {
+                    x: l.ring_cx as i32,
+                    y: l.ring_cy as i32,
+                }
+            }
         }
-        fn param(p:POINT)->LPARAM {LPARAM((((p.y as u16 as u32)<<16)|(p.x as u16 as u32)) as isize)}
+        fn param(p: POINT) -> LPARAM {
+            LPARAM((((p.y as u16 as u32) << 16) | (p.x as u16 as u32)) as isize)
+        }
         unsafe {
             assert!(!IsWindowVisible(hwnd).as_bool());
-            assert_eq!(SendMessageW(hwnd,WM_MOUSEACTIVATE,WPARAM(0),LPARAM(0)).0,MA_NOACTIVATE as isize);
-            for button in [false,false,true,true] {
-                let before=is_compact(hwnd);let p=point(hwnd,button);
-                let mut screen=p;let _=ClientToScreen(hwnd,&mut screen);
-                assert_eq!(SendMessageW(hwnd,WM_NCHITTEST,WPARAM(0),param(screen)).0,HTCLIENT as isize);
-                SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
-                assert_eq!(is_compact(hwnd),before);
+            assert_eq!(
+                SendMessageW(hwnd, WM_MOUSEACTIVATE, WPARAM(0), LPARAM(0)).0,
+                MA_NOACTIVATE as isize
+            );
+            for button in [false, false, true, true] {
+                let before = is_compact(hwnd);
+                let p = point(hwnd, button);
+                let mut screen = p;
+                let _ = ClientToScreen(hwnd, &mut screen);
+                assert_eq!(
+                    SendMessageW(hwnd, WM_NCHITTEST, WPARAM(0), param(screen)).0,
+                    HTCLIENT as isize
+                );
+                SendMessageW(hwnd, WM_LBUTTONDOWN, WPARAM(1), param(p));
+                assert_eq!(is_compact(hwnd), before);
                 // No wait, move, hold, WM_ENTERSIZEMOVE or WM_EXITSIZEMOVE.
-                SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(p));
-                assert_eq!(is_compact(hwnd),!before);
+                SendMessageW(hwnd, WM_LBUTTONUP, WPARAM(0), param(p));
+                assert_eq!(is_compact(hwnd), !before);
             }
-            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
-            let p=point(hwnd,false);
-            SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
-            SendMessageW(hwnd,WM_MOUSEMOVE,WPARAM(1),param(POINT{x:p.x+20,y:p.y}));
-            SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(POINT{x:p.x-20,y:p.y}));
-            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
-            assert_eq!(MOVES.load(Ordering::SeqCst),1);
-            let p=point(hwnd,false);
-            SendMessageW(hwnd,WM_LBUTTONDOWN,WPARAM(1),param(p));
-            SendMessageW(hwnd,WM_CANCELMODE,WPARAM(0),LPARAM(0));
-            SendMessageW(hwnd,WM_LBUTTONUP,WPARAM(0),param(p));
-            assert_eq!(CLICKS.load(Ordering::SeqCst),4);
+            assert_eq!(CLICKS.load(Ordering::SeqCst), 4);
+            let p = point(hwnd, false);
+            SendMessageW(hwnd, WM_LBUTTONDOWN, WPARAM(1), param(p));
+            SendMessageW(
+                hwnd,
+                WM_MOUSEMOVE,
+                WPARAM(1),
+                param(POINT {
+                    x: p.x + 20,
+                    y: p.y,
+                }),
+            );
+            SendMessageW(
+                hwnd,
+                WM_LBUTTONUP,
+                WPARAM(0),
+                param(POINT {
+                    x: p.x - 20,
+                    y: p.y,
+                }),
+            );
+            assert_eq!(CLICKS.load(Ordering::SeqCst), 4);
+            assert_eq!(MOVES.load(Ordering::SeqCst), 1);
+            let p = point(hwnd, false);
+            SendMessageW(hwnd, WM_LBUTTONDOWN, WPARAM(1), param(p));
+            SendMessageW(hwnd, WM_CANCELMODE, WPARAM(0), LPARAM(0));
+            SendMessageW(hwnd, WM_LBUTTONUP, WPARAM(0), param(p));
+            assert_eq!(CLICKS.load(Ordering::SeqCst), 4);
             assert!(!IsWindowVisible(hwnd).as_bool());
         }
         destroy(hwnd);
     }
     #[test]
     fn compact_has_only_ring_and_button_geometry_at_all_dpis() {
-        for width in [50,80,120,240] {
-            for dpi in [96,120,144,192] {
-                let compact=compute_bubble_layout(width,dpi,HDC::default(),true,true,true);
-                let expanded=compute_bubble_layout(width,dpi,HDC::default(),true,true,false);
-                assert!(compact.canvas_h<expanded.canvas_h);
-                assert_eq!(compact.ring_cy,expanded.ring_cy);
-                assert!(compact.toggle_rect.top as f32>compact.ring_cy+compact.ring_radius);
-                assert!(compact.toggle_rect.bottom<=compact.canvas_h-compact.shadow_margin);
-                assert!(toggle_hit(&compact,POINT{x:compact.ring_cx as i32,y:compact.ring_cy as i32}));
-                assert!(toggle_hit(&compact,POINT{x:compact.toggle_rect.left+1,y:compact.toggle_rect.top+1}));
-                assert!(!toggle_hit(&compact,POINT{x:0,y:0}));
-                assert!(!toggle_hit(&expanded,POINT{x:expanded.today_value_rect.left+1,y:expanded.today_value_rect.top+1}));
+        for width in [50, 80, 120, 240] {
+            for dpi in [96, 120, 144, 192] {
+                let compact = compute_bubble_layout(width, dpi, HDC::default(), true, true, true);
+                let expanded = compute_bubble_layout(width, dpi, HDC::default(), true, true, false);
+                assert!(compact.canvas_h < expanded.canvas_h);
+                assert_eq!(compact.ring_cy, expanded.ring_cy);
+                assert!(compact.toggle_rect.top as f32 > compact.ring_cy + compact.ring_radius);
+                assert!(compact.toggle_rect.bottom <= compact.canvas_h - compact.shadow_margin);
+                assert!(toggle_hit(
+                    &compact,
+                    POINT {
+                        x: compact.ring_cx as i32,
+                        y: compact.ring_cy as i32
+                    }
+                ));
+                assert!(toggle_hit(
+                    &compact,
+                    POINT {
+                        x: compact.toggle_rect.left + 1,
+                        y: compact.toggle_rect.top + 1
+                    }
+                ));
+                assert!(!toggle_hit(&compact, POINT { x: 0, y: 0 }));
+                assert!(!toggle_hit(
+                    &expanded,
+                    POINT {
+                        x: expanded.today_value_rect.left + 1,
+                        y: expanded.today_value_rect.top + 1
+                    }
+                ));
             }
         }
     }
     #[test]
     fn optional_sections_pack_without_overlap_at_all_dpis() {
         for mask in 0..32 {
-            for width in [50,130,240] { for dpi in [96,144,192] {
-                let l=layout_with_sections(width,dpi,HDC::default(),true,true,false,mask);
-                let pairs=[(&l.reset_title_rect,&l.countdown_rect),(&l.secondary_title_rect,&l.secondary_value_rect),(&l.today_title_rect,&l.today_value_rect),(&l.average_title_rect,&l.average_value_rect),(&l.credits_title_rect,&l.credits_value_rect)];
-                let mut previous=0;
-                for (i,(title,value)) in pairs.iter().enumerate() {
-                    if mask & (1<<i)!=0 {assert!(title.top>previous);assert!(value.top>=title.bottom);previous=value.bottom;}
-                    else {assert_eq!(title.bottom,0);assert_eq!(value.bottom,0);}
+            for width in [50, 130, 240] {
+                for dpi in [96, 144, 192] {
+                    let l =
+                        layout_with_sections(width, dpi, HDC::default(), true, true, false, mask);
+                    let pairs = [
+                        (&l.reset_title_rect, &l.countdown_rect),
+                        (&l.secondary_title_rect, &l.secondary_value_rect),
+                        (&l.today_title_rect, &l.today_value_rect),
+                        (&l.average_title_rect, &l.average_value_rect),
+                        (&l.credits_title_rect, &l.credits_value_rect),
+                    ];
+                    let mut previous = 0;
+                    for (i, (title, value)) in pairs.iter().enumerate() {
+                        if mask & (1 << i) != 0 {
+                            assert!(title.top > previous);
+                            assert!(value.top >= title.bottom);
+                            previous = value.bottom;
+                        } else {
+                            assert_eq!(title.bottom, 0);
+                            assert_eq!(value.bottom, 0);
+                        }
+                    }
+                    assert!(l.toggle_rect.top > previous);
+                    assert!(
+                        l.toggle_rect.bottom <= l.canvas_h - l.shadow_margin,
+                        "mask={mask} width={width} dpi={dpi}"
+                    );
+                    assert!(l.provider_rect.bottom < l.resta_label_rect.top);
                 }
-                assert!(l.toggle_rect.top>previous);
-                assert!(l.toggle_rect.bottom<=l.canvas_h-l.shadow_margin,"mask={mask} width={width} dpi={dpi}");
-                assert!(l.provider_rect.bottom<l.resta_label_rect.top);
-            }}
+            }
         }
     }
     #[test]
     fn dragging_does_not_become_a_compact_toggle() {
-        assert!(!gesture_is_drag(Some((100,100)),(103,102)));
-        assert!(gesture_is_drag(Some((100,100)),(108,100)));
-        assert!(gesture_is_drag(Some((100,100)),(100,90)));
+        assert!(!gesture_is_drag(Some((100, 100)), (103, 102)));
+        assert!(gesture_is_drag(Some((100, 100)), (108, 100)));
+        assert!(gesture_is_drag(Some((100, 100)), (100, 90)));
     }
     #[test]
     fn three_metric_pairs_fit_at_supported_sizes_and_dpis() {
         for width in [50, 80, 120, 180, 240] {
             for dpi in [96, 120, 144, 192] {
-              for dual in [false,true] {
-                let layout = compute_bubble_layout(width, dpi, HDC::default(),dual,true,false);
-                assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
-                assert!(layout.toggle_rect.bottom <= layout.canvas_h - layout.shadow_margin,
-                    "width={width} dpi={dpi}");
-                if dual { assert!(layout.secondary_value_rect.bottom < layout.today_title_rect.top); }
-              }
+                for dual in [false, true] {
+                    let layout =
+                        compute_bubble_layout(width, dpi, HDC::default(), dual, true, false);
+                    assert!(layout.today_value_rect.bottom < layout.average_title_rect.top);
+                    assert!(
+                        layout.toggle_rect.bottom <= layout.canvas_h - layout.shadow_margin,
+                        "width={width} dpi={dpi}"
+                    );
+                    if dual {
+                        assert!(layout.secondary_value_rect.bottom < layout.today_title_rect.top);
+                    }
+                }
             }
         }
     }
 
     #[test]
     fn render_native_metrics_preview_when_requested() {
-        let Ok(path) = std::env::var("CODEX_WIDGET_PREVIEW_PATH") else { return };
+        let Ok(path) = std::env::var("CODEX_WIDGET_PREVIEW_PATH") else {
+            return;
+        };
         unsafe {
             let dc = CreateCompatibleDC(None);
-            let dual=std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref()!=Ok("single");
-            let compact=std::env::var("CODEX_WIDGET_PREVIEW_COMPACT").as_deref()==Ok("1");
-            let mask=std::env::var("CODEX_WIDGET_PREVIEW_SECTIONS").ok().and_then(|s|s.parse().ok()).unwrap_or(31);
-            let layout = layout_with_sections(120, 144, dc,dual,true,compact,mask);
+            let dual = std::env::var("CODEX_WIDGET_PREVIEW_MODE").as_deref() != Ok("single");
+            let compact = std::env::var("CODEX_WIDGET_PREVIEW_COMPACT").as_deref() == Ok("1");
+            let mask = std::env::var("CODEX_WIDGET_PREVIEW_SECTIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(31);
+            let layout = layout_with_sections(120, 144, dc, dual, true, compact, mask);
             let inputs = PaintInputs {
-                model: if std::env::var("CODEX_WIDGET_PREVIEW_PROVIDER").as_deref()==Ok("claude") {ProviderId::Claude} else {ProviderId::ChatGpt}, session_pct: Some(64.0),
-                session_text: if dual {"2 horas e 30 minutos"}else{"6 dias e 2 horas"}.into(), session_resets_at:None,
-                weekly_pct:if dual {Some(20.0)}else{None},weekly_text:"6 dias e 2 horas".into(),weekly_resets_at:None,
-                today_text:"12.345.678 tokens".into(),today_title:"Hoje 01/11 neste PC:".into(),
-                average_text:"23.456.789 tokens/dia".into(),credits_title:"Resets: 2 disponíveis".into(),credits_text:"Vence 04/11 18:00".into(),quota_label:if dual {"5h"}else{"7d"}.into(),secondary_label:"7d".into(),quota_duration_secs:Some(if dual {18000}else{604800}),is_dark:true,compact,pulse_phase:0,
+                model: if std::env::var("CODEX_WIDGET_PREVIEW_PROVIDER").as_deref() == Ok("claude")
+                {
+                    ProviderId::Claude
+                } else {
+                    ProviderId::ChatGpt
+                },
+                session_pct: Some(64.0),
+                session_text: if dual {
+                    "2 horas e 30 minutos"
+                } else {
+                    "6 dias e 2 horas"
+                }
+                .into(),
+                session_resets_at: None,
+                weekly_pct: if dual { Some(20.0) } else { None },
+                weekly_text: "6 dias e 2 horas".into(),
+                weekly_resets_at: None,
+                today_text: "12.345.678 tokens".into(),
+                today_title: "Hoje 01/11 neste PC:".into(),
+                average_text: "23.456.789 tokens/dia".into(),
+                credits_title: "Resets: 2 disponíveis".into(),
+                credits_text: "Vence 04/11 18:00".into(),
+                quota_label: if dual { "5h" } else { "7d" }.into(),
+                secondary_label: "7d".into(),
+                quota_duration_secs: Some(if dual { 18000 } else { 604800 }),
+                is_dark: true,
+                compact,
+                pulse_phase: 0,
             };
             let bmi = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
-                    biSize:std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                    biWidth:layout.canvas_w,biHeight:-layout.canvas_h,
-                    biPlanes:1,biBitCount:32,..Default::default()
-                }, ..Default::default()
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: layout.canvas_w,
+                    biHeight: -layout.canvas_h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    ..Default::default()
+                },
+                ..Default::default()
             };
             let mut bits = std::ptr::null_mut();
-            let bitmap = CreateDIBSection(dc,&bmi,DIB_RGB_COLORS,&mut bits,None,0).unwrap();
-            let previous = SelectObject(dc,bitmap);
-            let pixels = std::slice::from_raw_parts_mut(bits as *mut u32,
-                (layout.canvas_w*layout.canvas_h) as usize);
-            let mut pixmap = paint_bubble_pixmap(&layout,&inputs).unwrap();
-            copy_pixmap_to_dib(&pixmap,pixels);
-            paint_bubble_text(dc,&layout,&inputs);
+            let bitmap = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+            let previous = SelectObject(dc, bitmap);
+            let pixels = std::slice::from_raw_parts_mut(
+                bits as *mut u32,
+                (layout.canvas_w * layout.canvas_h) as usize,
+            );
+            let mut pixmap = paint_bubble_pixmap(&layout, &inputs).unwrap();
+            copy_pixmap_to_dib(&pixmap, pixels);
+            paint_bubble_text(dc, &layout, &inputs);
             let _ = GdiFlush();
-            restore_alpha_from_pixmap(&pixmap,pixels);
-            for (pixel,rgba) in pixels.iter().zip(pixmap.data_mut().chunks_exact_mut(4)) {
-                rgba.copy_from_slice(&[(*pixel>>16) as u8,(*pixel>>8) as u8,*pixel as u8,(*pixel>>24) as u8]);
+            restore_alpha_from_pixmap(&pixmap, pixels);
+            for (pixel, rgba) in pixels.iter().zip(pixmap.data_mut().chunks_exact_mut(4)) {
+                rgba.copy_from_slice(&[
+                    (*pixel >> 16) as u8,
+                    (*pixel >> 8) as u8,
+                    *pixel as u8,
+                    (*pixel >> 24) as u8,
+                ]);
             }
             pixmap.save_png(path).unwrap();
-            SelectObject(dc,previous); let _=DeleteObject(bitmap); let _=DeleteDC(dc);
+            SelectObject(dc, previous);
+            let _ = DeleteObject(bitmap);
+            let _ = DeleteDC(dc);
         }
     }
 }

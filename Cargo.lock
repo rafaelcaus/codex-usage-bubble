@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "claude-code-usage-bubble"
-version = "0.6.17"
+version = "0.6.18"
 dependencies = [
  "chrono",
  "dirs",
@@ -118,6 +118,7 @@ dependencies = [
  "simplelog",
  "thiserror",
  "tiny-skia",
+ "toml",
  "windows",
 ]
 

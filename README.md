@@ -14,7 +14,7 @@ Codex e Claude ficam habilitados. Se uma conta não estiver conectada, seus dado
 
 ## Escolher o que aparece
 
-Botão direito na bolha → **Configurações → Informações no widget**:
+Botão direito na bolha → **Abrir configurações → Informações**:
 - Quando renova.
 - Segundo limite, quando fornecido pelo serviço.
 - Uso de hoje em tokens do Codex.
@@ -52,6 +52,12 @@ Derivado de [tiennm99/claude-code-usage-bubble](https://github.com/tiennm99/clau
 
 ## Assinatura, API e gateway são fontes diferentes
 
-O consumo Codex exibido nesta versão vem da assinatura ChatGPT autenticada no perfil Windows. Não representa automaticamente o saldo de uma API externa, gateway ou conta de outra pessoa usada para gerar respostas. Autenticação por API e assinatura podem coexistir no computador e ter limites diferentes.
+Em **Abrir configurações → Contas e APIs**, selecione CODEX ou CLAUDE e a fonte: Automático, Assinatura do serviço ou API externa. O modo automático consulta a configuração local e sinaliza gateways; não usa a cota Free como se fosse o saldo da API. Uma assinatura e uma API podem coexistir e ter limites diferentes.
 
-Uma URL compatível com OpenAI para geração não garante uma consulta compatível de consumo. Cada fornecedor precisa oferecer uma consulta de saldo/cota documentada e um adaptador validado. A integração de consumo da Clipoos está em análise; não está pronta nesta versão. Nenhuma credencial ChatGPT/Claude deve ser enviada a um gateway para tentar descobrir seus limites.
+Para API externa, informe uma URL HTTPS **GET de consumo**, autenticação e os caminhos JSON de consumo usado e limite total do mesmo período (por exemplo `/quota/used` e `/quota/limit`). A URL de geração de respostas normalmente não serve. Data de renovação e período são opcionais; o widget não inventa esses valores. A chave é guardada no Gerenciador de Credenciais do usuário Windows, vinculada ao serviço e à URL exata. Tokens da assinatura nunca são reutilizados no gateway; redirecionamentos da consulta externa são bloqueados.
+
+A Clipoos documenta a consulta `https://clipoos.online/usage`. O formato da resposta autenticada ainda precisa ser confirmado para fornecer preenchimento automático; a integração genérica permite campos explícitos. Não use POST nesse endereço para monitorar consumo. Nenhuma chave deve ser enviada por chat.
+
+A nova janela reúne Geral, Informações e Contas e APIs. **Salvar alterações** aplica as escolhas; **Cancelar** descarta a edição. O menu curto mantém atualizar dados, detalhes, modo compacto e atualizar aplicativo. Recursos antigos continuam em Mais opções.
+
+O Claude usa as credenciais locais do Claude Code, incluindo perfis com `CLAUDE_CONFIG_DIR`. Login no site/aplicativo não substitui login no Claude Code. Falhas de autenticação do computador de outra pessoa exigem diagnóstico local; não são resolvidas copiando credenciais do autor.

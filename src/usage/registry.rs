@@ -30,16 +30,25 @@ impl Registry {
         http: &Client,
         settings: &Settings,
     ) -> Vec<(ProviderId, Result<UsageWindows, Error>)> {
+        crate::external_usage::configure(settings);
         let mut out = Vec::new();
         for provider in ProviderId::LIVE_USAGE {
             if !settings.is_provider_enabled(provider) {
                 continue;
             }
-            let result = match provider {
-                ProviderId::Claude => self.claude.poll(http),
-                ProviderId::ChatGpt => self.chatgpt.poll(http),
-                ProviderId::OpenCodeGo => {
-                    unreachable!("OpenCode Go has no live usage provider yet")
+            let result = if crate::external_usage::is_external(provider) {
+                crate::external_usage::poll(
+                    http,
+                    provider,
+                    crate::external_usage::config(settings, provider),
+                )
+            } else {
+                match provider {
+                    ProviderId::Claude => self.claude.poll(http),
+                    ProviderId::ChatGpt => self.chatgpt.poll(http),
+                    ProviderId::OpenCodeGo => {
+                        unreachable!("OpenCode Go has no live usage provider yet")
+                    }
                 }
             };
             out.push((provider, result));
